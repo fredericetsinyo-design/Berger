@@ -170,7 +170,7 @@ export async function recoverLocalAccess(email: string, newPassword: string, old
 export async function signUpSupabase(email: string, password: string, displayName: string) {
   const sb = supabase();
   if (!sb) throw new AuthError('Serveur non configuré');
-  const { error } = await sb.auth.signUp({ email, password, options: { data: { display_name: displayName } } });
+  const { error } = await sb.auth.signUp({ email, password, options: { data: { display_name: displayName }, emailRedirectTo: `${location.origin}${location.pathname}` } });
   if (error) throw new AuthError(error.message);
 }
 

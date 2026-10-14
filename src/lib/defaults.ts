@@ -1,4 +1,5 @@
 import { vault } from './store';
+import { getSupabaseConfig } from './supabase';
 import type { Settings, UserProfile } from './types';
 
 export const DEFAULT_TEMPLATES: { name: string; body: string }[] = [
@@ -15,7 +16,8 @@ export function defaultSettings(): Partial<Settings> {
     appName: 'Berger',
     primary: '',
     theme: 'systeme',
-    ai: { provider: 'aucun' },
+    // Avec un serveur configuré, l'IA passe par la fonction serveur (clé jamais présente dans le navigateur).
+    ai: { provider: getSupabaseConfig() ? 'serveur' : 'aucun' },
     stt: { provider: 'aucun' },
     whatsapp: { mode: 'lien', countryCode: '228' },
     autoLockMinutes: 15,
