@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Smartphone, FileUp, Check, AlertTriangle } from 'lucide-react';
+import { Smartphone, FileUp, Check, AlertTriangle, Search } from 'lucide-react';
 import { Modal, toast, toastError } from './ui';
 import { vault } from '../lib/store';
 import { parseContactFile, markDuplicates, phonePickerSupported, pickFromPhone, type ContactDraft } from '../lib/contacts';
@@ -10,6 +10,7 @@ export function ImportContacts({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [q, setQ] = useState('');
   const phone = phonePickerSupported();
 
   const load = (drafts: ContactDraft[]) => {
@@ -39,6 +40,12 @@ export function ImportContacts({ onClose }: { onClose: () => void }) {
     } catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const count = rows?.filter((r) => r.selected).length ?? 0;
+  const nq = q.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const digits = q.replace(/\D/g, '');
+  const visible = (rows ?? []).map((r, i) => ({ r, i })).filter(({ r }) => !nq
+    || `${r.firstName} ${r.lastName} ${r.email ?? ''}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(nq)
+    || (digits.length >= 3 && (r.phone ?? '').replace(/\D/g, '').includes(digits)));
+  const setVisible = (v: boolean) => { const idx = new Set(visible.map((x) => x.i)); setRows(rows!.map((r, j) => (idx.has(j) ? { ...r, selected: v } : r))); };
 
   return (
     <Modal title="Importer des contacts" onClose={onClose} wide>
@@ -67,15 +74,20 @@ export function ImportContacts({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <div className="stack">
+          <div className="search-box" style={{ maxWidth: 'none', boxShadow: 'none' }}>
+            <Search size={16} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher un nom, un numéro, un e-mail…" aria-label="Rechercher dans les contacts" autoFocus />
+          </div>
           <div className="row between wrap">
-            <span className="small"><b>{rows.length}</b> contact(s) trouvé(s) · <b>{count}</b> sélectionné(s)</span>
+            <span className="small"><b>{rows.length}</b> contact(s){q ? <> · <b>{visible.length}</b> affiché(s)</> : null} · <b>{count}</b> sélectionné(s)</span>
             <div className="row">
-              <button className="btn ghost sm" onClick={() => setRows(rows.map((r) => ({ ...r, selected: true })))}>Tout</button>
-              <button className="btn ghost sm" onClick={() => setRows(rows.map((r) => ({ ...r, selected: false })))}>Aucun</button>
+              <button className="btn ghost sm" onClick={() => setVisible(true)}>{q ? 'Cocher les résultats' : 'Tout'}</button>
+              <button className="btn ghost sm" onClick={() => setVisible(false)}>{q ? 'Décocher les résultats' : 'Aucun'}</button>
             </div>
           </div>
-          <div className="list stagger" style={{ maxHeight: '50vh', overflow: 'auto' }}>
-            {rows.map((r, i) => (
+          <div className="list" style={{ maxHeight: '50vh', overflow: 'auto' }}>
+            {visible.length === 0 && <p className="small muted">Aucun contact ne correspond à « {q} ».</p>}
+            {visible.map(({ r, i }) => (
               <label key={i} className="list-item" style={{ cursor: 'pointer' }}>
                 <input type="checkbox" checked={r.selected} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, selected: e.target.checked } : x)))} style={{ accentColor: 'var(--primary)', width: 18, height: 18 }} />
                 <span className="avatar sm">{r.photo ? <img src={r.photo} alt="" /> : `${r.firstName[0] ?? ''}${r.lastName[0] ?? ''}`.toUpperCase()}</span>

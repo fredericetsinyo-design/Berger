@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarDays, MessageCircle, Plus, Sparkles } from 'lucide-react';
+import { CalendarDays, MessageCircle, Plus, Sparkles, Check } from 'lucide-react';
 import type { Youth } from '../lib/types';
 import { vault } from '../lib/store';
 import { relative } from '../lib/dates';
@@ -18,13 +18,14 @@ export function youthStats(y: Youth) {
 }
 
 /** Carte horizontale : photo à gauche, puces d'état, actions rapides (inspirée de la liste de l'écran de référence). */
-export function PersonCard({ y, onWhatsApp }: { y: Youth; onWhatsApp?: (y: Youth) => void }) {
+export function PersonCard({ y, onWhatsApp, selectable, selected, onToggle }: { y: Youth; onWhatsApp?: (y: Youth) => void; selectable?: boolean; selected?: boolean; onToggle?: (id: string) => void }) {
   const nav = useNavigate();
   const st = youthStats(y);
   const [label, color] = STATUS_YOUTH[y.status];
-  return (
-    <Link to={`/jeunes/${y.id}`} className="person">
+  const inner = (
+    <>
       <div className="ph">
+        {selectable && <span className={`tick ${selected ? 'on' : ''}`}>{selected && <Check size={16} />}</span>}
         {y.photo ? <img src={y.photo} alt="" loading="lazy" /> : initials(y)}
         <span className={`badge ${color === 'grey' ? 'frost' : color}`}>{label}</span>
       </div>
@@ -36,16 +37,20 @@ export function PersonCard({ y, onWhatsApp }: { y: Youth; onWhatsApp?: (y: Youth
           <CalendarDays size={12} />
           {st.next ? `Prochain RDV ${relative(st.next.start)}` : st.last ? `Vu ${relative(st.last.date)}` : 'Pas encore rencontré'}
         </span>
-        <div className="row mt8" style={{ gap: 6 }}>
+        {!selectable && <div className="row mt8" style={{ gap: 6 }}>
           {st.goals > 0 && <span className="price">{st.done}/{st.goals} objectif{st.goals > 1 ? 's' : ''}</span>}
           <button className="btn ghost sm icon" title="Nouvelle rencontre" aria-label="Nouvelle rencontre" onClick={async (e) => { e.preventDefault(); const s = await newSession(y.id); nav(`/rencontres/${s.id}`); }}><Plus size={15} /></button>
           {onWhatsApp && y.phone && y.allowWhatsApp !== false && (
             <button className="btn ghost sm icon" title="Message WhatsApp" aria-label="Message WhatsApp" onClick={(e) => { e.preventDefault(); onWhatsApp(y); }}><MessageCircle size={15} color="#25d366" /></button>
           )}
-        </div>
+        </div>}
       </div>
-    </Link>
+    </>
   );
+  // En mode sélection, la carte devient une grande case à cocher (aucune navigation).
+  return selectable
+    ? <button type="button" role="checkbox" aria-checked={!!selected} className={`person ${selected ? 'selected' : ''}`} onClick={() => onToggle?.(y.id)}>{inner}</button>
+    : <Link to={`/jeunes/${y.id}`} className="person">{inner}</Link>;
 }
 
 /** Vignette verticale à grande photo (inspirée de « Our services »). */

@@ -18,7 +18,7 @@ export function findConflicts(appt: Pick<Appointment, 'start' | 'end' | 'id'>, a
 export const isOverdue = (a: ActionItem, now = new Date()) =>
   !!a.dueDate && (a.status === 'a_faire' || a.status === 'en_cours') && dayKey(a.dueDate) < dayKey(now);
 
-export function youthName(y?: Youth) { return y ? `${y.firstName} ${y.lastName}`.trim() : 'Jeune'; }
+export function youthName(y?: Youth) { return y ? `${y.firstName ?? ''} ${y.lastName ?? ''}`.trim() || 'Jeune' : 'Jeune'; }
 
 export function computeDashboard(now = new Date()) {
   const youth = vault.all('youth');

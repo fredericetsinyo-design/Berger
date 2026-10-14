@@ -345,3 +345,32 @@ describe('Adaptateur Supabase : correspondance colonnes ↔ enregistrements', ()
     expect(back).toMatchObject({ id: 's1', ownerId: 'u1', version: 3, theme: 'Test', notes: 'n', updatedAt: '2026-10-02T00:00:00Z' });
   });
 });
+
+describe('Suppression groupée de dossiers', () => {
+  beforeEach(freshDevice);
+  it('supprime la sélection et tout ce qui s’y rattache, sans toucher aux autres', async () => {
+    const { deleteDossiers, collectDossiers } = await import('../src/lib/youthOps');
+    await registerLocal('del@x.tg', 'motdepasse-solide', 'D');
+    const a = await makeYouth({ firstName: 'A' });
+    const b = await makeYouth({ firstName: 'B' });
+    const c = await makeYouth({ firstName: 'C' });
+    for (const y of [a, b, c]) {
+      await vault.put('sessions', { youthId: y.id, date: new Date().toISOString(), type: 'presentiel', theme: 't', topics: [], notes: 'n', verses: [], attachments: [], reportStatus: 'brouillon' });
+      await vault.put('actions', { youthId: y.id, title: 'x', owner: 'jeune', priority: 'normale', status: 'a_faire' });
+    }
+    const blobId = await vault.putBlob(new Blob(['son']));
+    const au = await vault.put('audios', { youthId: a.id, durationSec: 1, mime: 'audio/webm', blobId, status: 'transcrit', consent: 'oral' });
+    await vault.put('transcriptions', { audioId: au.id, raw: 'texte', provider: 'test' });
+    expect(collectDossiers([a.id]).transcriptions).toHaveLength(1);
+
+    await deleteDossiers([a.id, b.id]);
+    expect(vault.all('youth').map((y) => y.firstName)).toEqual(['C']);
+    expect(vault.all('sessions').every((s) => s.youthId === c.id)).toBe(true);
+    expect(vault.all('actions')).toHaveLength(1);
+    expect(vault.all('audios')).toHaveLength(0);
+    expect(vault.all('transcriptions')).toHaveLength(0);
+    expect(await vault.getBlob(blobId)).toBeNull();
+    // suppression logique propagée à la synchronisation
+    expect((await db.outbox.toArray()).some((o) => o.recordId === a.id && o.kind === 'delete')).toBe(true);
+  });
+});

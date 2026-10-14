@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Plus, Phone, Mail, MapPin, CalendarPlus, MessageCircle, FilePlus, Pencil, Trash2, Target, BookOpen, Sparkles, ShieldCheck, Download, Search, Contact,
+  Plus, Phone, Mail, MapPin, CalendarPlus, MessageCircle, FilePlus, Pencil, Trash2, Target, BookOpen, Sparkles, ShieldCheck, Download, Search, Contact, CheckSquare, X,
 } from 'lucide-react';
 import { vault, useCollection, useRecord } from '../lib/store';
 import type { Youth, Goal, Kind, TimelineEvent, Consent } from '../lib/types';
@@ -17,6 +17,8 @@ import { newSession } from './QuickCreate';
 import { PersonCard } from '../components/PersonCard';
 import { ImportContacts } from '../components/ImportContacts';
 import { loadSamples, removeSamples, hasSamples } from '../lib/samples';
+import { deleteDossiers, exportDossiers } from '../lib/youthOps';
+import { getSupabaseConfig } from '../lib/supabase';
 
 // ======================= Liste =======================
 export function YouthList() {
@@ -29,6 +31,11 @@ export function YouthList() {
   const [importOpen, setImportOpen] = useState(false);
   const [wa, setWa] = useState<Youth | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [confirmDel, setConfirmDel] = useState<'selection' | 'tout' | null>(null);
+  const toggle = (id: string) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const stopSelecting = () => { setSelecting(false); setSel(new Set()); };
   useEffect(() => { if (params.get('nouveau')) setEdit('new'); }, [params]);
   useEffect(() => { if (params.get('importer')) setImportOpen(true); }, [params]);
   const filtered = list
@@ -43,6 +50,7 @@ export function YouthList() {
       <div className="page-head">
         <div><h1>Jeunes accompagnés</h1><p>{list.length} fiche{list.length > 1 ? 's' : ''}{hasSamples() ? ' · dont des exemples' : ''}</p></div>
         <div className="row wrap">
+          {list.length > 0 && !selecting && <button className="btn ghost" onClick={() => setSelecting(true)}><CheckSquare size={16} /> Sélectionner</button>}
           <button className="btn ghost" onClick={() => setImportOpen(true)}><Contact size={16} /> Importer des contacts</button>
           <button className="btn" onClick={() => setEdit('new')}><Plus size={16} /> Nouveau jeune</button>
         </div>
@@ -51,6 +59,17 @@ export function YouthList() {
         <Search size={16} />
         <input placeholder="Rechercher par nom, quartier ou téléphone…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filtrer les jeunes" />
       </div>
+      {selecting && (
+        <div className="selbar" role="toolbar" aria-label="Sélection">
+          <b className="small">{sel.size} sélectionné{sel.size > 1 ? 's' : ''}</b>
+          <span className="grow" />
+          <button className="btn ghost sm" onClick={() => setSel(new Set(filtered.map((y) => y.id)))}>Tout sélectionner{filtered.length !== list.length ? ` (${filtered.length})` : ''}</button>
+          <button className="btn ghost sm" disabled={!sel.size} onClick={() => setSel(new Set())}>Aucun</button>
+          <button className="btn danger sm" disabled={!sel.size} onClick={() => setConfirmDel('selection')}><Trash2 size={14} /> Supprimer ({sel.size})</button>
+          <button className="btn danger sm" onClick={() => setConfirmDel('tout')}>Tout supprimer</button>
+          <button className="btn ghost sm icon" aria-label="Quitter la sélection" onClick={stopSelecting}><X size={14} /></button>
+        </div>
+      )}
       <div className="chips">
         {chips.map(([v, l, n]) => <button key={v} className={`chip ${status === v ? 'on' : ''}`} onClick={() => setStatus(v)}>{l} <span className="tiny" style={{ opacity: .8 }}>{n}</span></button>)}
       </div>
@@ -71,14 +90,57 @@ export function YouthList() {
         </div>
       ) : (
         <div className="grid g2 stagger" key={status}>
-          {filtered.map((y) => <PersonCard key={y.id} y={y} onWhatsApp={setWa} />)}
+          {filtered.map((y) => <PersonCard key={y.id} y={y} onWhatsApp={setWa} selectable={selecting} selected={sel.has(y.id)} onToggle={toggle} />)}
         </div>
       )}
       {hasSamples() && <div><button className="btn ghost sm" onClick={async () => { await removeSamples(); toast('Exemples supprimés'); }}><Trash2 size={14} /> Supprimer les fiches d’exemple</button></div>}
       {edit && <YouthForm youth={edit === 'new' ? undefined : edit} onClose={() => { setEdit(null); if (params.get('nouveau')) setParams({}); }} />}
       {importOpen && <ImportContacts onClose={() => { setImportOpen(false); if (params.get('importer')) setParams({}); }} />}
       {wa && <WhatsAppComposer youth={wa} onClose={() => setWa(null)} />}
+      {confirmDel && (
+        <DeleteDossiersModal
+          ids={confirmDel === 'tout' ? list.map((y) => y.id) : [...sel]}
+          all={confirmDel === 'tout'}
+          onClose={() => setConfirmDel(null)}
+          onDone={() => { setConfirmDel(null); stopSelecting(); }}
+        />
+      )}
     </div>
+  );
+}
+
+function DeleteDossiersModal({ ids, all, onClose, onDone }: { ids: string[]; all: boolean; onClose: () => void; onDone: () => void }) {
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const names = ids.map((id) => vault.get('youth', id)).filter(Boolean).map((y) => youthName(y!));
+  const needWord = all || ids.length > 5;
+  const run = async () => {
+    setBusy(true);
+    try {
+      await deleteDossiers(ids, (d) => setProgress(d));
+      toast(`${ids.length} dossier${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`);
+      onDone();
+    } catch (e) { toastError(e); setBusy(false); }
+  };
+  return (
+    <Modal title={all ? 'Supprimer tous les dossiers' : `Supprimer ${ids.length} dossier${ids.length > 1 ? 's' : ''}`} onClose={busy ? () => undefined : onClose}>
+      <div className="stack">
+        <p className="small">Les fiches, rencontres, notes, objectifs, actions, rendez-vous, notes vocales et consentements de {all ? <b>tous les jeunes ({ids.length})</b> : 'ces jeunes'} seront supprimés{getSupabaseConfig() ? ', sur cet appareil et sur le serveur' : ''}.</p>
+        {!all && <div className="small muted">{names.slice(0, 6).join(', ')}{names.length > 6 ? ` et ${names.length - 6} autre(s)` : ''}</div>}
+        <button className="btn ghost" disabled={busy} onClick={() => exportDossiers(ids, all ? 'tous-les-dossiers' : 'selection')}><Download size={16} /> Exporter d’abord une copie (JSON)</button>
+        {needWord && (
+          <Field label="Pour confirmer, tapez SUPPRIMER">
+            <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} autoCapitalize="characters" disabled={busy} />
+          </Field>
+        )}
+        {busy && <div className="progress"><i style={{ width: `${Math.round((progress / ids.length) * 100)}%`, animation: 'none' }} /></div>}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn ghost" disabled={busy} onClick={onClose}>Annuler</button>
+          <button className="btn danger" disabled={busy || (needWord && typed.trim().toUpperCase() !== 'SUPPRIMER')} onClick={run}><Trash2 size={16} /> {busy ? 'Suppression…' : 'Supprimer définitivement'}</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -170,13 +232,7 @@ export function YouthDetail() {
   };
 
   const deleteAll = async () => {
-    for (const t of ['sessions', 'notes', 'goals', 'actions', 'appointments', 'events', 'bible_recs', 'messages', 'consents', 'audios'] as const) {
-      for (const r of vault.all(t).filter((x) => (x as { youthId?: string }).youthId === y.id)) {
-        if (t === 'audios') await vault.deleteBlob((r as { blobId: string }).blobId);
-        await vault.remove(t, r.id);
-      }
-    }
-    await vault.remove('youth', y.id);
+    await deleteDossiers([y.id]);
     toast('Dossier supprimé');
     nav('/jeunes');
   };
