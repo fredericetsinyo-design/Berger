@@ -456,3 +456,9 @@ table.t td { padding: 8px; border-bottom: 1px solid var(--border); vertical-alig
   .person:hover, a.card:hover, .tile:hover { transform: none; }
   .person .ph img, .tile .img img { transition: none; }
 }
+
+/* Mode allégé (activé automatiquement après un plantage du navigateur) */
+.lite *, .lite *::before, .lite *::after { animation: none !important; transition: none !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important; }
+.lite body::before { display: none; }
+.lite .banner .pic img { -webkit-mask-image: none; mask-image: none; }
+.lite .card, .lite .person, .lite .tile, .lite .stat:not(.accent) { background: var(--surface); }

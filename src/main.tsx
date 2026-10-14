@@ -3,6 +3,18 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
 
+// Filet de sécurité : si la session précédente s'est arrêtée sans se fermer normalement
+// (plantage du navigateur, fréquent sur iPhone en cas de manque de mémoire), on passe en mode allégé.
+try {
+  const ALIVE = 'berger.alive', LITE = 'berger.lite';
+  if (localStorage.getItem(ALIVE) === '1') localStorage.setItem(LITE, '1');
+  if (localStorage.getItem(LITE) === '1') document.documentElement.classList.add('lite');
+  localStorage.setItem(ALIVE, '1');
+  const bye = () => localStorage.removeItem(ALIVE);
+  addEventListener('pagehide', bye);
+  document.addEventListener('visibilitychange', () => (document.visibilityState === 'hidden' ? bye() : localStorage.setItem(ALIVE, '1')));
+} catch { /* stockage indisponible */ }
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
