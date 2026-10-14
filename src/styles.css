@@ -12,7 +12,7 @@
   --blob-3: #d9f4ef;
   --surface: #ffffff;
   --surface-2: #fff8f1;
-  --glass: rgba(255, 255, 255, .62);
+  --glass: rgba(255, 255, 255, .74);
   --glass-strong: rgba(255, 255, 255, .82);
   --glass-border: rgba(255, 255, 255, .85);
   --border: #f5e3d0;
@@ -67,12 +67,14 @@ body {
 }
 /* Fond vivant : taches de couleur floues derrière les surfaces de verre */
 body::before {
-  content: ''; position: fixed; inset: -20vmax; z-index: -1; pointer-events: none;
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background:
     radial-gradient(38vmax 38vmax at 12% 8%, var(--blob-1), transparent 62%),
     radial-gradient(34vmax 34vmax at 92% 18%, var(--blob-2), transparent 60%),
     radial-gradient(40vmax 40vmax at 70% 100%, var(--blob-3), transparent 62%);
-  animation: drift 26s ease-in-out infinite alternate;
+}
+@media (hover: hover) and (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  body::before { animation: drift 26s ease-in-out infinite alternate; will-change: transform; }
 }
 @keyframes drift { to { transform: translate3d(2vmax, -2vmax, 0) scale(1.05); } }
 a { color: var(--primary); text-decoration: none; }
@@ -86,7 +88,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 ::selection { background: var(--primary-soft); }
 
 /* ---------- Verre ---------- */
-.glass, .card, .sidebar, .topbar .search-box, .bottom-nav, .stat, .modal, .sync, .pills, .day-band {
+/* Verre dépoli : uniquement sur les éléments uniques (barres, fenêtres). Sur les cartes répétées,
+   un fond semi-opaque donne le même rendu sans le coût GPU (qui fait planter Safari sur iPhone). */
+.sidebar, .bottom-nav, .modal {
   -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
 }
 
@@ -439,3 +443,16 @@ table.t td { padding: 8px; border-bottom: 1px solid var(--border); vertical-alig
 .youth-hero > *:not(.bgph) { position: relative; }
 .youth-hero h1 { color: #fff; }
 .grid > * { min-width: 0; }
+
+/* Appareils tactiles / petits écrans : effets coûteux désactivés (stabilité sur iPhone) */
+@media (max-width: 860px), (hover: none) {
+  .btn.frost, .badge.frost, .banner .float, .day-band .tl-card, .overlay, .toast, .auth-side .quote-card {
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  .modal { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--surface); }
+  .overlay { background: rgba(60, 30, 10, .45); }
+  .youth-hero .bgph { display: none; }
+  .banner .float { animation: none; background: rgba(255,255,255,.3); }
+  .person:hover, a.card:hover, .tile:hover { transform: none; }
+  .person .ph img, .tile .img img { transition: none; }
+}

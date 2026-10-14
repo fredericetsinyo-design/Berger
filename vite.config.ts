@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
     react(),
     mode !== 'demo' &&
       VitePWA({
-        registerType: 'prompt',
+        registerType: 'autoUpdate', // une version corrigée s'installe d'elle-même, même si l'ancienne plante
         includeAssets: ['icon.svg'],
         manifest: {
           name: 'Berger — Assistant d’accompagnement',
@@ -34,6 +34,9 @@ export default defineConfig(({ mode }) => ({
           // les données des jeunes vivent chiffrées dans IndexedDB.
           globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
           navigateFallback: 'index.html',
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
           runtimeCaching: [
             {
               urlPattern: ({ url }) => url.pathname.endsWith('/bible/lsg.json'),

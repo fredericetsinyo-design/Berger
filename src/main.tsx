@@ -12,11 +12,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 // Service worker (PWA). Absent en mode démo (aperçu hébergé).
 if (import.meta.env.MODE !== 'demo' && 'serviceWorker' in navigator) {
   import('virtual:pwa-register').then(({ registerSW }) => {
-    const update = registerSW({
-      onNeedRefresh() {
-        if (confirm('Une nouvelle version de l’application est disponible. Recharger maintenant ?')) update(true);
-      },
-    });
+    // Mise à jour automatique : la nouvelle version prend la main dès qu'elle est téléchargée.
+    registerSW({ immediate: true });
   }).catch(() => undefined);
 }
 
