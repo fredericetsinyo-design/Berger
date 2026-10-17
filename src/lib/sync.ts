@@ -21,6 +21,8 @@ export type PushResult =
   | { status: 'forbidden'; message?: string };
 
 export interface RemoteAdapter {
+  /** Vrai si une session serveur valide existe pour le compte déverrouillé. */
+  ready?(ownerId: string): Promise<boolean>;
   push(table: TableName, record: BaseRecord, baseVersion: number): Promise<PushResult>;
   pull(since: string | null): Promise<{ items: { table: TableName; record: BaseRecord }[]; cursor: string | null }>;
 }
@@ -77,6 +79,11 @@ export class SyncEngine {
     this.running = true;
     setStatus({ state: 'synchronisation', message: undefined });
     try {
+      if (this.adapter.ready && !(await this.adapter.ready(vault.ownerId!))) {
+        // Pas de session serveur : on n'envoie rien (sinon tout serait refusé) et on garde la file intacte.
+        setStatus({ state: 'erreur', message: 'Synchronisation en pause : reconnexion au serveur nécessaire.' });
+        return res;
+      }
       const ops = (await this.pendingOps()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       for (const op of ops) {
         if (op.status === 'conflit') { res.conflicts++; continue; }
@@ -226,6 +233,13 @@ export function fromRow(row: Record<string, unknown>): BaseRecord {
 }
 
 export class SupabaseAdapter implements RemoteAdapter {
+  async ready(ownerId: string) {
+    const sb = supabase();
+    if (!sb) return false;
+    const { data } = await sb.auth.getSession();
+    return data.session?.user.id === ownerId;
+  }
+
   async push(table: TableName, record: BaseRecord, baseVersion: number): Promise<PushResult> {
     const sb = supabase();
     if (!sb) throw new Error('Serveur non configuré');

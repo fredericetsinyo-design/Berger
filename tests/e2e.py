@@ -203,7 +203,12 @@ with sync_playwright() as p:
         pg2 = ctx.new_page()
         pg2.goto(URL)  # rechargé depuis le service worker, sans réseau
         expect(pg2.get_by_label('E-mail')).to_have_value('fred@berger.tg', timeout=20000)
+        pg2.get_by_label('Mot de passe').fill('mauvais-mot-de-passe')
+        pg2.get_by_role('button', name='Se connecter').click()
+        expect(pg2.get_by_role('alert')).to_contain_text('Mot de passe incorrect')
         pg2.get_by_label('Mot de passe').fill('un-mot-de-passe-solide')
+        pg2.get_by_role('button', name='Afficher').click()
+        expect(pg2.get_by_label('Mot de passe')).to_have_attribute('type', 'text')
         pg2.get_by_role('button', name='Se connecter').click()
         expect(pg2.get_by_text('Jeunes suivis')).to_be_visible(timeout=20000)
         pg2.goto(URL + '#/actions')

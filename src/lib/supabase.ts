@@ -28,7 +28,7 @@ let client: SupabaseClient | null = null;
 export function supabase(): SupabaseClient | null {
   const cfg = getSupabaseConfig();
   if (!cfg) return null;
-  if (!client) client = createClient(cfg.url, cfg.anonKey, { auth: { persistSession: true, autoRefreshToken: true } });
+  if (!client) client = createClient(cfg.url, cfg.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: 'berger.sb.auth' } });
   return client;
 }
 

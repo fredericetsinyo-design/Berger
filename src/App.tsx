@@ -4,14 +4,14 @@ import {
   LayoutDashboard, Users, CalendarDays, CheckSquare, BookOpen, Sparkles, MessageCircle, Settings as SettingsIcon,
   Search, Plus, Lock, Moon, Sun, Menu, Bell,
 } from 'lucide-react';
-import { getUser, onAuthChange, lockSession, getPendingRecovery, clearPendingRecovery } from './lib/auth';
+import { getUser, onAuthChange, lockSession, getPendingRecovery, clearPendingRecovery, getServerAuthState, getEmailLink, reconnectServer, requestPasswordReset } from './lib/auth';
 import { vault, useVaultTick, usePendingOps } from './lib/store';
 import { getSettings, saveSettings } from './lib/defaults';
 import { useSyncStatus, startAutoSync, syncEngine } from './lib/sync';
 import { startReminderLoop, subscribeReminders, getInAppReminders, dismissReminder } from './lib/reminders';
 import { processPendingTranscriptions } from './lib/transcription';
-import { Toasts, Modal } from './components/ui';
-import LoginPage, { LockScreen, RecoveryCodeModal } from './pages/Login';
+import { Toasts, Modal, toast, toastError } from './components/ui';
+import LoginPage, { LockScreen, RecoveryCodeModal, PasswordInput } from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import { YouthList, YouthDetail } from './pages/Youth';
 import SessionPage from './pages/Session';
@@ -25,7 +25,7 @@ import { QuickCreate } from './pages/QuickCreate';
 const BiblePage = lazy(() => import('./pages/Bible'));
 const AssistantPage = lazy(() => import('./pages/Assistant'));
 
-const authSnap = () => `${getUser()?.id ?? ''}|${getPendingRecovery() ?? ''}`;
+const authSnap = () => `${getUser()?.id ?? ''}|${getUser()?.role ?? ''}|${getPendingRecovery() ?? ''}|${getServerAuthState()}|${getEmailLink()?.kind ?? ''}`;
 function useAuth() {
   useSyncExternalStore(onAuthChange, authSnap, authSnap);
   return getUser();
@@ -200,6 +200,35 @@ function Shell() {
   );
 }
 
+/** Bandeau discret : les dossiers sont ouverts, mais le serveur attend une reconnexion pour synchroniser. */
+function ServerBanner() {
+  const [open, setOpen] = useState(false);
+  const [pwd, setPwd] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <div className="server-banner" role="status">
+        <span>Synchronisation en pause : le serveur demande votre mot de passe.</span>
+        <button className="btn sm" onClick={() => setOpen(true)}>Se reconnecter</button>
+      </div>
+      {open && (
+        <Modal title="Reconnexion au serveur" onClose={() => setOpen(false)}>
+          <form className="stack" onSubmit={async (e) => {
+            e.preventDefault(); setBusy(true);
+            try { const st = await reconnectServer(pwd); if (st === 'ok') { toast('Reconnecté : la synchronisation reprend.'); setOpen(false); syncEngine.run().catch(() => undefined); } }
+            catch (err) { toastError(err); } finally { setBusy(false); }
+          }}>
+            <p className="small muted">Vos dossiers restent accessibles. Saisissez le mot de passe de votre compte serveur ({getUser()?.email}) pour reprendre la synchronisation.</p>
+            <PasswordInput value={pwd} onChange={setPwd} autoFocus />
+            <button className="btn" disabled={busy}>{busy ? 'Patientez…' : 'Se reconnecter'}</button>
+            <button type="button" className="btn ghost sm" onClick={async () => { try { await requestPasswordReset(getUser()!.email); toast('Un lien de réinitialisation a été envoyé par e-mail.'); } catch (err) { toastError(err); } }}>Mot de passe du serveur oublié ?</button>
+          </form>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function useAutoLock() {
   useEffect(() => {
     let last = Date.now();
@@ -228,9 +257,12 @@ export default function App() {
     window.addEventListener('online', online);
     return () => window.removeEventListener('online', online);
   }, [user, vault.unlocked]);
+  const serverState = getServerAuthState();
+  useEffect(() => { if (serverState === 'ok' && vault.unlocked) syncEngine.run().catch(() => undefined); }, [serverState]);
 
   return (
     <HashRouter>
+      {user && vault.unlocked && serverState === 'mot_de_passe' && <ServerBanner />}
       {!user ? <LoginPage /> : !vault.unlocked ? <LockScreen /> : <Shell />}
       {user && getPendingRecovery() && <RecoveryCodeModal code={getPendingRecovery()!} onDone={clearPendingRecovery} />}
       <Toasts />

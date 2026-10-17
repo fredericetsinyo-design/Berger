@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { handleEmailLink } from './lib/auth';
 import './styles.css';
 
 // Filet de sécurité : si la session précédente s'est arrêtée sans se fermer normalement
@@ -15,11 +16,14 @@ try {
   document.addEventListener('visibilitychange', () => (document.visibilityState === 'hidden' ? bye() : localStorage.setItem(ALIVE, '1')));
 } catch { /* stockage indisponible */ }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+// Un lien reçu par e-mail (confirmation, réinitialisation) est traité avant l'affichage.
+handleEmailLink().catch(() => null).finally(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+});
 
 // Service worker (PWA). Absent en mode démo (aperçu hébergé).
 if (import.meta.env.MODE !== 'demo' && 'serviceWorker' in navigator) {
