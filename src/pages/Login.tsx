@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Lock, Mail, Server, ShieldCheck, WifiOff } from 'lucide-react';
+import { Download, Eye, EyeOff, KeyRound, Lock, Mail, Server, Share, ShieldCheck, WifiOff, X } from 'lucide-react';
 import {
   login, registerLocal, signUpSupabase, requestPasswordReset, resetLocalWithRecovery, logout, getUser,
   recoverLocalAccess, setNewServerPassword, AuthError, pendingCountFor, deviceAccounts, unlock,
@@ -16,6 +16,36 @@ function AuthSide() {
         <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600 }}>Chaque jeune a une histoire.</div>
         <div className="small" style={{ opacity: .9 }}>Écoutez, notez, suivez — et gardez du temps pour la relation.</div>
       </div>
+    </div>
+  );
+}
+
+// Proposition d'installation sur l'écran d'accueil (téléphone), masquée une fois l'application installée.
+type InstallEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> };
+let deferredInstall: InstallEvent | null = null;
+if (typeof window !== 'undefined') window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e as InstallEvent; });
+
+function InstallHint() {
+  const standalone = typeof window !== 'undefined' && (matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const mobile = ios || /Android/.test(navigator.userAgent);
+  const [hidden, setHidden] = useState(() => { try { return localStorage.getItem('berger.install.hide') === '1'; } catch { return false; } });
+  const [, force] = useState(0);
+  useEffect(() => { const t = setTimeout(() => force((x) => x + 1), 1500); return () => clearTimeout(t); }, []);
+  if (standalone || !mobile || hidden) return null;
+  const hide = () => { setHidden(true); try { localStorage.setItem('berger.install.hide', '1'); } catch { /* */ } };
+  return (
+    <div className="card flat row small" style={{ gap: 10, alignItems: 'flex-start' }}>
+      <Download size={18} color="var(--primary)" style={{ flexShrink: 0, marginTop: 2 }} />
+      <div className="grow">
+        <b>Installer Berger sur ce téléphone</b>
+        {ios
+          ? <div className="muted">Dans Safari, touchez <Share size={13} style={{ verticalAlign: -2 }} /> <b>Partager</b>, puis <b>« Sur l’écran d’accueil »</b>. Connectez-vous ensuite dans l’application installée : vos dossiers s’y synchronisent.</div>
+          : deferredInstall
+            ? <button className="btn sm mt8" onClick={async () => { await deferredInstall!.prompt(); deferredInstall = null; force((x) => x + 1); }}>Installer l’application</button>
+            : <div className="muted">Dans Chrome, ouvrez le menu ⋮ puis <b>« Installer l’application »</b> ou <b>« Ajouter à l’écran d’accueil »</b>.</div>}
+      </div>
+      <button type="button" className="btn ghost sm icon" aria-label="Masquer" onClick={hide}><X size={14} /></button>
     </div>
   );
 }
@@ -154,9 +184,10 @@ export default function LoginPage() {
             ? <button type="button" className="btn ghost sm" style={{ alignSelf: 'center' }} onClick={() => go('oubli')}>Mot de passe oublié ?</button>
             : mode === 'oubli' && <button type="button" className="btn ghost sm" style={{ alignSelf: 'center' }} onClick={() => go('connexion')}>Retour à la connexion</button>}
         </form>
+        <InstallHint />
         <div className="card flat stack s6 small">
           <div className="row"><ShieldCheck size={16} color="var(--green)" /><span>Dossiers chiffrés sur l’appareil (AES-256).</span></div>
-          <div className="row"><WifiOff size={16} color="var(--primary)" /><span>Fonctionne hors ligne après la première connexion.</span></div>
+          <div className="row"><WifiOff size={16} color="var(--primary)" /><span>{hasServer ? 'Vos dossiers se synchronisent entre téléphone et ordinateur à chaque connexion, et fonctionnent hors ligne.' : 'Fonctionne hors ligne après la première connexion.'}</span></div>
           <div className="row between">
             <span className="row"><Server size={16} color="var(--muted)" />{hasServer ? 'Synchronisation : serveur configuré' : 'Mode local (sans serveur)'}</span>
             <button type="button" className="btn ghost sm" onClick={() => setServerOpen(true)}>Détails</button>

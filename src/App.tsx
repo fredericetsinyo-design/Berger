@@ -46,6 +46,9 @@ function SyncBadge() {
   const st = useSyncStatus();
   const ops = usePendingOps();
   const nav = useNavigate();
+  useEffect(() => {
+    if (st.lastPulled) toast(`Synchronisé : ${st.lastPulled} élément(s) reçu(s) du serveur.`);
+  }, [st.lastSync]);
   const [online, setOnline] = useState(navigator.onLine);
   useEffect(() => {
     const on = () => setOnline(true), off = () => setOnline(false);

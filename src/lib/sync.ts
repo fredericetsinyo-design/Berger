@@ -30,7 +30,7 @@ export interface RemoteAdapter {
 export class AuthLostError extends Error {}
 
 export type SyncState = 'hors_ligne' | 'en_ligne' | 'synchronisation' | 'en_attente' | 'synchronise' | 'erreur' | 'local';
-interface Status { state: SyncState; lastSync?: string; message?: string }
+interface Status { state: SyncState; lastSync?: string; message?: string; lastPulled?: number }
 
 let status: Status = { state: 'local' };
 const listeners = new Set<() => void>();
@@ -99,6 +99,7 @@ export class SyncEngine {
       setStatus({
         state: res.failed || res.conflicts ? 'erreur' : remaining ? 'en_attente' : 'synchronise',
         lastSync: new Date().toISOString(),
+        lastPulled: res.pulled,
         message: res.conflicts ? `${res.conflicts} conflit(s) à arbitrer` : res.failed ? `${res.failed} envoi(s) en échec, nouvel essai automatique` : undefined,
       });
     } catch (e) {
@@ -175,7 +176,10 @@ export class SyncEngine {
       if (LOCAL_ONLY.includes(table)) continue;
       if (pendingIds.has(record.id)) continue; // la modification locale en attente sera arbitrée à l'envoi
       const local = vault.getRaw(table, record.id);
-      if (!local || record.version > local.version) { await vault.applyRemote(table, record); n++; }
+      if (!local || record.version > local.version) {
+        await vault.applyRemote(table, record);
+        if (!(record as BaseRecord & { deleted?: boolean }).deleted || local) n++;
+      }
     }
     if (cursor) await db.meta.put({ key: this.cursorKey(), value: cursor });
     return n;
@@ -263,16 +267,21 @@ export class SupabaseAdapter implements RemoteAdapter {
     let cursor = since;
     for (const [local, server] of Object.entries(SERVER_TABLE) as [TableName, string][]) {
       if (LOCAL_ONLY.includes(local)) continue;
-      let q = sb.from(server).select('*').order('server_updated_at', { ascending: true }).limit(1000);
-      if (since) q = q.gt('server_updated_at', since);
-      const { data, error } = await q;
-      if (error) {
-        if (/JWT/i.test(error.message)) throw new AuthLostError(error.message);
-        throw new Error(`${server} : ${error.message}`);
-      }
-      for (const row of data ?? []) {
-        items.push({ table: local, record: fromRow(row) });
-        if (!cursor || (row.server_updated_at as string) > cursor) cursor = row.server_updated_at as string;
+      // Lecture par pages de 1000 jusqu'à épuisement (un nouvel appareil récupère tout l'historique).
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        let q = sb.from(server).select('*').order('server_updated_at', { ascending: true }).order('id', { ascending: true }).range(from, from + PAGE - 1);
+        if (since) q = q.gt('server_updated_at', since);
+        const { data, error } = await q;
+        if (error) {
+          if (/JWT/i.test(error.message)) throw new AuthLostError(error.message);
+          throw new Error(`${server} : ${error.message}`);
+        }
+        for (const row of data ?? []) {
+          items.push({ table: local, record: fromRow(row) });
+          if (!cursor || (row.server_updated_at as string) > cursor) cursor = row.server_updated_at as string;
+        }
+        if (!data || data.length < PAGE) break;
       }
     }
     return { items, cursor };
@@ -287,11 +296,16 @@ export function configureSync() {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let listening = false;
 export function startAutoSync(intervalMs = 30_000) {
   configureSync();
   const kick = () => { syncEngine.run().catch(() => undefined); };
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && !listening) {
+    listening = true;
     window.addEventListener('online', kick);
+    // Sur téléphone : synchronise dès que l'application revient au premier plan.
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') kick(); });
+    window.addEventListener('focus', kick);
     window.addEventListener('offline', () => setStatus({ state: syncEngine.adapter ? 'hors_ligne' : 'local' }));
   }
   if (timer) clearInterval(timer);
