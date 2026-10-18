@@ -191,6 +191,21 @@ with sync_playwright() as p:
         pg.screenshot(path=f'{OUT}/00-tableau-de-bord.png', full_page=True)
     tdash()
 
+    @step('IA : configuration de Gemini et test de la clé')
+    def tgem():
+        import json as _j
+        pg.route('https://generativelanguage.googleapis.com/**', lambda r: r.fulfill(status=200, content_type='application/json',
+            body=_j.dumps({'candidates': [{'content': {'parts': [{'text': '{"ok": true}'}]}}]})))
+        pg.goto(URL + '#/reglages?onglet=ia')
+        pg.get_by_label('Fournisseur').select_option('gemini')
+        pg.get_by_label('Clé d’API Gemini').fill('AIza-cle-de-test')
+        pg.get_by_role('button', name='Tester et enregistrer').click()
+        expect(pg.get_by_text(re.compile('L’IA répond'))).to_be_visible()
+        pg.unroute('https://generativelanguage.googleapis.com/**')
+        pg.get_by_label('Fournisseur').select_option('aucun')
+        pg.get_by_role('button', name='Enregistrer', exact=True).click()
+    tgem()
+
     @step('10 & 11. Hors ligne : création, fermeture, réouverture')
     def t10():
         ctx.set_offline(True)

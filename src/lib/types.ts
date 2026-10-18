@@ -243,7 +243,7 @@ export interface Settings extends BaseRecord {
   primary: string;
   logo?: string;
   theme: 'clair' | 'sombre' | 'systeme';
-  ai: { provider: 'aucun' | 'anthropic' | 'openai_compatible' | 'serveur'; apiKey?: string; model?: string; baseUrl?: string };
+  ai: { provider: 'aucun' | 'gemini' | 'anthropic' | 'openai_compatible' | 'serveur'; apiKey?: string; model?: string; baseUrl?: string };
   stt: { provider: 'aucun' | 'openai_compatible' | 'serveur'; apiKey?: string; model?: string; baseUrl?: string };
   whatsapp: { mode: 'lien' | 'api'; countryCode: string };
   autoLockMinutes: number;

@@ -8,7 +8,7 @@ import { db, type OutboxOp } from '../lib/db';
 import { syncEngine, useSyncStatus, listConflicts, resolveConflict, type ConflictView } from '../lib/sync';
 import { supabase, getSupabaseConfig } from '../lib/supabase';
 import { requestNotificationPermission } from '../lib/reminders';
-import { DEFAULT_MODELS } from '../lib/ai';
+import { DEFAULT_MODELS, getProvider, testProvider } from '../lib/ai';
 import { fmtDateTime } from '../lib/dates';
 import { Tabs, Field, toast, toastError, Empty, Confirm } from '../components/ui';
 import { ServerConfig } from './Login';
@@ -93,17 +93,27 @@ function Profile() {
 function AISettings() {
   const s = getSettings();
   const [v, setV] = useState(s.ai);
+  const [busy, setBusy] = useState(false);
   return (
     <div className="card stack" style={{ maxWidth: 680 }}>
       <p className="small muted">L’IA sert aux comptes rendus, suggestions d’accompagnement et sélection de passages bibliques. Elle n’est utilisée que pour les jeunes ayant donné leur consentement, avec des données pseudonymisées. Les résultats restent des propositions à valider.</p>
       <Field label="Fournisseur">
         <select className="input" value={v.provider} onChange={(e) => setV({ ...v, provider: e.target.value as Settings['ai']['provider'] })}>
           <option value="aucun">Aucun (fonctions IA désactivées)</option>
+          <option value="gemini">Google Gemini — clé personnelle</option>
           <option value="anthropic">Anthropic (Claude) — clé personnelle</option>
           <option value="openai_compatible">Compatible OpenAI (OpenAI, Mistral, Ollama…) — clé personnelle</option>
           <option value="serveur" disabled={!getSupabaseConfig()}>Fonction serveur (clé conservée côté serveur — recommandé en équipe)</option>
         </select>
       </Field>
+      {v.provider === 'gemini' && (
+        <>
+          <p className="small muted">Créez une clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a> (bouton « Create API key »), puis collez-la ici.</p>
+          <Field label="Clé d’API Gemini" hint="Stockée chiffrée sur cet appareil uniquement ; jamais synchronisée. À saisir sur chaque appareil (ou utilisez « Fonction serveur »)."><input className="input" type="password" value={v.apiKey ?? ''} onChange={(e) => setV({ ...v, apiKey: e.target.value })} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="AIza…" /></Field>
+          <Field label="Modèle (facultatif)"><input className="input" value={v.model ?? ''} onChange={(e) => setV({ ...v, model: e.target.value })} placeholder={DEFAULT_MODELS.gemini} autoCapitalize="none" /></Field>
+          <p className="tiny" style={{ color: 'var(--amber)' }}>Offre gratuite de Gemini : Google peut utiliser les textes envoyés pour améliorer ses services. Les noms, téléphones et e-mails sont retirés avant l’envoi, mais pour des dossiers sensibles, activez la facturation dans Google AI Studio (offre payante, sans réutilisation des données).</p>
+        </>
+      )}
       {(v.provider === 'anthropic' || v.provider === 'openai_compatible') && (
         <>
           {v.provider === 'openai_compatible' && <Field label="URL de base de l’API"><input className="input" value={v.baseUrl ?? ''} onChange={(e) => setV({ ...v, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" /></Field>}
@@ -111,7 +121,19 @@ function AISettings() {
           <Field label="Modèle"><input className="input" value={v.model ?? ''} onChange={(e) => setV({ ...v, model: e.target.value })} placeholder={v.provider === 'anthropic' ? DEFAULT_MODELS.anthropic : DEFAULT_MODELS.openai_compatible} /></Field>
         </>
       )}
-      <div><button className="btn" onClick={() => saveSettings({ ai: v }).then(() => toast('Configuration IA enregistrée'))}>Enregistrer</button></div>
+      <div className="row wrap">
+        <button className="btn" disabled={busy} onClick={() => saveSettings({ ai: { ...v, apiKey: v.apiKey?.trim() } }).then(() => toast('Configuration IA enregistrée'))}>Enregistrer</button>
+        {v.provider !== 'aucun' && <button className="btn secondary" disabled={busy} onClick={async () => {
+          setBusy(true);
+          try {
+            await saveSettings({ ai: { ...v, apiKey: v.apiKey?.trim() } });
+            const p = getProvider();
+            if (!p) throw new Error('Configuration incomplète : saisissez la clé.');
+            await testProvider(p);
+            toast(`L’IA répond (${p.name}). Configuration enregistrée.`);
+          } catch (e) { toastError(e); } finally { setBusy(false); }
+        }}>{busy ? 'Test en cours…' : 'Tester et enregistrer'}</button>}
+      </div>
       <p className="tiny faint">Coûts : facturés par le fournisseur selon le volume de texte traité (voir docs/LIMITES.md). Vérifiez les conditions du fournisseur : les données ne doivent pas servir à entraîner ses modèles.</p>
     </div>
   );

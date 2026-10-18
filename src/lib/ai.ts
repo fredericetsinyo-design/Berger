@@ -18,10 +18,44 @@ export class AIError extends Error {}
 
 export interface AIProvider { name: string; complete(system: string, user: string): Promise<string> }
 
-export const DEFAULT_MODELS = { anthropic: 'claude-sonnet-5-5', openai_compatible: 'gpt-4o-mini' };
+export const DEFAULT_MODELS = { gemini: 'gemini-flash-latest', anthropic: 'claude-sonnet-5-5', openai_compatible: 'gpt-4o-mini' };
+
+/** Appel à l'API Gemini (Google AI Studio). La réponse est demandée en JSON. */
+export async function geminiComplete(apiKey: string, model: string, system: string, user: string): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  let r: Response;
+  try {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: { temperature: 0.3, responseMimeType: 'application/json', maxOutputTokens: 4096 },
+      }),
+    });
+  } catch { throw new AIError('Gemini injoignable : vérifiez votre connexion Internet.'); }
+  if (!r.ok) {
+    const body = await r.text();
+    if (/API_KEY_INVALID|API key not valid/i.test(body)) throw new AIError('Clé Gemini invalide. Vérifiez-la dans Google AI Studio (aistudio.google.com/apikey).');
+    if (r.status === 429) throw new AIError('Quota Gemini atteint pour le moment. Réessayez dans une minute (ou passez à l’offre payante dans Google AI Studio).');
+    if (r.status === 404) throw new AIError(`Modèle Gemini « ${model} » introuvable. Laissez le champ « Modèle » vide pour utiliser le modèle par défaut.`);
+    if (r.status === 403) throw new AIError('Accès Gemini refusé : l’API n’est pas activée pour cette clé ou n’est pas disponible dans votre région.');
+    throw new AIError(`Gemini : erreur ${r.status} ${body.slice(0, 160)}`);
+  }
+  const j = await r.json();
+  const cand = j.candidates?.[0];
+  if (!cand) throw new AIError(j.promptFeedback?.blockReason ? 'Gemini a refusé de traiter ce contenu (filtre de sécurité).' : 'Réponse Gemini vide.');
+  return (cand.content?.parts ?? []).map((x: { text?: string }) => x.text ?? '').join('');
+}
 
 export function getProvider(): AIProvider | null {
   const s = getSettings().ai;
+  if (s.provider === 'gemini') {
+    if (!s.apiKey) return null;
+    const model = s.model?.trim() || DEFAULT_MODELS.gemini;
+    return { name: `gemini:${model}`, complete: (system, user) => geminiComplete(s.apiKey!.trim(), model, system, user) };
+  }
   if (s.provider === 'anthropic') {
     if (!s.apiKey) return null;
     return {
@@ -64,12 +98,24 @@ export function getProvider(): AIProvider | null {
       name: 'serveur',
       async complete(system, user) {
         const { data, error } = await sb.functions.invoke('ai', { body: { system, user } });
-        if (error) throw new AIError(error.message);
+        if (error) {
+          let msg = error.message;
+          try { const b = await (error as { context?: Response }).context?.json(); if (b?.error) msg = b.error; } catch { /* */ }
+          throw new AIError(`IA serveur : ${msg}`);
+        }
         return (data as { text: string }).text;
       },
     };
   }
   return null;
+}
+
+/** Petit essai pour vérifier la configuration (aucune donnée de jeune envoyée). */
+export async function testProvider(p: AIProvider) {
+  const raw = await p.complete('Réponds uniquement avec un objet JSON valide.', 'Renvoie {"ok": true, "message": "Bonjour"}');
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new AIError('Le fournisseur répond, mais pas au format attendu.');
+  return true;
 }
 
 /** Remplaçable dans les tests. */

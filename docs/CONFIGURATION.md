@@ -59,3 +59,13 @@ et validé. Statut enregistré : « WhatsApp ouvert (envoi non vérifiable) ».
 Puis Réglages → WhatsApp → mode « API ». Les messages programmés passent par la file `message_queue`,
 sont annulables tant que leur statut est « En file d'attente », et ne sont jamais envoyés en double
 (verrou de version côté serveur).
+
+## Google Gemini
+
+**Sur l'appareil :** Réglages → Intelligence artificielle → « Google Gemini ». Collez une clé créée sur https://aistudio.google.com/apikey, puis touchez « Tester et enregistrer ». La clé est chiffrée sur l'appareil et n'est jamais synchronisée. Il faut donc la saisir sur chaque appareil.
+
+**Sur le serveur, une seule clé pour tous les appareils :** dans Supabase, ouvrez Edge Functions → Secrets et ajoutez `GEMINI_API_KEY`. Choisissez ensuite « Fonction serveur » dans les Réglages.
+
+Si le champ « Modèle » est laissé vide, l'application utilise `gemini-flash-latest`. Le secret `AI_MODEL` permet d'en imposer un autre côté serveur.
+
+Avec l'offre gratuite, Google peut réutiliser les textes envoyés. Les noms, numéros et e-mails sont retirés avant l'envoi, mais pour des données sensibles, activez la facturation.
