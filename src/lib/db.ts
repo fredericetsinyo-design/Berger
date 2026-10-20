@@ -9,11 +9,14 @@ export interface DeviceAccount {
   displayName: string;
   role: 'admin' | 'responsable' | 'accompagnateur';
   mode: 'local' | 'supabase';
-  salt: string; // sel PBKDF2 (mot de passe)
   iterations: number;
-  wrappedKey: Sealed; // clé de données chiffrée par la clé dérivée du mot de passe
-  recoverySalt: string;
-  wrappedKeyRecovery: Sealed; // même clé, chiffrée par la clé de secours
+  rawKey?: string; // clé de la copie locale (plus de clé de secours à conserver)
+  vSalt?: string; verifier?: string; // empreinte PBKDF2 du mot de passe (connexion hors ligne)
+  // Ancien format (avant octobre 2026) : clé protégée par le mot de passe et par une clé de secours.
+  salt?: string;
+  wrappedKey?: Sealed;
+  recoverySalt?: string;
+  wrappedKeyRecovery?: Sealed;
   createdAt: string;
   lastLoginAt?: string;
   locked?: boolean; // autorisation perdue : dossiers verrouillés, conservés chiffrés

@@ -85,7 +85,7 @@ export function RecoveryCodeModal({ code, onDone }: { code: string; onDone: () =
 export default function LoginPage() {
   const hasServer = !!getSupabaseConfig();
   const [mode, setMode] = useState<'connexion' | 'creation' | 'oubli'>('connexion');
-  const [oubli, setOubli] = useState<'email' | 'cle'>(hasServer ? 'email' : 'cle');
+  const [oubli] = useState<'email' | 'cle'>(hasServer ? 'email' : 'cle');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -116,6 +116,7 @@ export default function LoginPage() {
       if (mode === 'connexion') {
         const r = await login(email, password);
         if (r.offline) toast('Connexion hors ligne : vos dossiers sont accessibles. La synchronisation reprendra avec le réseau.');
+        else if (r.refreshed) toast('Vos dossiers sont récupérés depuis le serveur.');
       } else if (mode === 'creation') {
         if (hasServer) {
           const r = await signUpSupabase(email, password, name);
@@ -133,8 +134,8 @@ export default function LoginPage() {
         setInfo(hasServer ? 'Mot de passe de l’appareil modifié. Connectez-vous avec le nouveau. Si le serveur demande l’ancien, utilisez « Recevoir un lien par e-mail ».' : 'Mot de passe modifié. Connectez-vous avec le nouveau.');
       }
     } catch (err) {
-      if (err instanceof AuthError && err.code === 'cle_locale' && hasServer) setNeedOld(true);
       setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof AuthError && err.code === 'cle_locale' && hasServer) setNeedOld(true);
     } finally { setBusy(false); }
   };
 
@@ -161,23 +162,22 @@ export default function LoginPage() {
               autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} inputMode="email" />
           </Field>
           {mode !== 'oubli' && (
-            <Field label="Mot de passe" hint={mode === 'creation' ? '10 caractères minimum. Il protège aussi le chiffrement de vos dossiers.' : undefined}>
+            <Field label="Mot de passe" hint={mode === 'creation' ? '10 caractères minimum. C’est le seul mot de passe à retenir : il ouvre vos dossiers sur tous vos appareils.' : undefined}>
               <PasswordInput value={password} onChange={setPassword} isNew={mode === 'creation'} minLength={mode === 'creation' ? 10 : undefined} />
             </Field>
           )}
           {mode === 'oubli' && (
             <>
-              {hasServer && <Pills value={oubli} onChange={(v) => { setOubli(v); setError(''); setInfo(''); }} options={[['email', 'Lien par e-mail'], ['cle', 'Clé de secours']]} />}
               {oubli === 'email'
                 ? <p className="small muted"><Mail size={14} style={{ verticalAlign: -2 }} /> Vous recevrez un lien pour choisir un nouveau mot de passe. Ouvrez-le sur cet appareil.</p>
                 : <>
-                    <p className="small muted"><KeyRound size={14} style={{ verticalAlign: -2 }} /> La clé de secours affichée à la création du compte permet de rouvrir les dossiers de cet appareil, même hors ligne.</p>
+                    <p className="small muted"><KeyRound size={14} style={{ verticalAlign: -2 }} /> Sans serveur, seule la clé de secours affichée à la création d’un ancien compte permet de choisir un nouveau mot de passe.</p>
                     <Field label="Clé de secours"><input className="input" required value={recovery} onChange={(e) => setRecovery(e.target.value)} placeholder="XXXX-XXXX-…" autoCapitalize="characters" autoCorrect="off" spellCheck={false} /></Field>
                     <Field label="Nouveau mot de passe" hint="10 caractères minimum."><PasswordInput value={newPwd} onChange={setNewPwd} isNew minLength={10} /></Field>
                   </>}
             </>
           )}
-          {error && <p className="auth-msg err" role="alert">{error}</p>}
+          {error && !needOld && <p className="auth-msg err" role="alert">{error}</p>}
           {info && <p className="auth-msg ok" role="status">{info}</p>}
           <button className="btn" disabled={busy}>{busy ? 'Patientez…' : label}</button>
           {mode === 'connexion'
@@ -186,7 +186,7 @@ export default function LoginPage() {
         </form>
         <InstallHint />
         <div className="card flat stack s6 small">
-          <div className="row"><ShieldCheck size={16} color="var(--green)" /><span>Dossiers chiffrés sur l’appareil (AES-256).</span></div>
+          <div className="row"><ShieldCheck size={16} color="var(--green)" /><span>{hasServer ? 'Un seul mot de passe : celui de votre compte, sur tous vos appareils.' : 'Dossiers enregistrés sur cet appareil.'}</span></div>
           <div className="row"><WifiOff size={16} color="var(--primary)" /><span>{hasServer ? 'Vos dossiers se synchronisent entre téléphone et ordinateur à chaque connexion, et fonctionnent hors ligne.' : 'Fonctionne hors ligne après la première connexion.'}</span></div>
           <div className="row between">
             <span className="row"><Server size={16} color="var(--muted)" />{hasServer ? 'Synchronisation : serveur configuré' : 'Mode local (sans serveur)'}</span>
@@ -198,22 +198,28 @@ export default function LoginPage() {
 
       {serverOpen && <ServerConfig onClose={() => { setServerOpen(false); force((x) => x + 1); }} />}
       {needOld && (
-        <OldPasswordModal email={email} newPassword={password} onClose={() => setNeedOld(false)} />
+        <OldPasswordModal email={email} newPassword={password} message={error} onClose={() => { setNeedOld(false); setError(''); }} />
       )}
       {link?.kind === 'recovery' && hasServer && <ServerResetModal onClose={(pwd) => { clearEmailLink(); if (pwd) { setPassword(pwd); setMode('connexion'); setInfo('Nouveau mot de passe enregistré. Touchez « Se connecter ».'); } }} />}
     </div>
   );
 }
 
-function OldPasswordModal({ email, newPassword, onClose }: { email: string; newPassword: string; onClose: () => void }) {
+function OldPasswordModal({ email, newPassword, message, onClose }: { email: string; newPassword: string; message: string; onClose: () => void }) {
   const [v, setV] = useState('');
+  const [busy, setBusy] = useState(false);
+  const run = async (f: () => Promise<unknown>) => { setBusy(true); try { await f(); onClose(); } catch (err) { toastError(err); } finally { setBusy(false); } };
   return (
-    <Modal title="Déverrouiller les données de cet appareil" onClose={onClose}>
-      <form className="stack" onSubmit={async (e) => { e.preventDefault(); try { await recoverLocalAccess(email, newPassword, v); onClose(); } catch { toastError(new Error('Ni l’ancien mot de passe ni la clé de secours ne correspondent.')); } }}>
-        <p className="small muted">Votre mot de passe a changé sur le serveur. Les dossiers enregistrés sur cet appareil sont encore protégés par l’ancien. Saisissez l’ancien mot de passe ou votre clé de secours.</p>
-        <Field label="Ancien mot de passe ou clé de secours"><PasswordInput value={v} onChange={setV} autoFocus /></Field>
-        <button className="btn">Déverrouiller</button>
-      </form>
+    <Modal title="Modifications non envoyées" onClose={onClose}>
+      <div className="stack">
+        <p className="small">{message}</p>
+        <p className="small muted">Pour les envoyer avant d’ouvrir vos dossiers, saisissez votre ancien mot de passe (ou l’ancienne clé de secours). Sinon, continuez : vos dossiers seront récupérés depuis le serveur, sans ces modifications.</p>
+        <form className="stack" onSubmit={(e) => { e.preventDefault(); run(() => recoverLocalAccess(email, newPassword, v)); }}>
+          <Field label="Ancien mot de passe ou clé de secours"><PasswordInput value={v} onChange={setV} autoFocus /></Field>
+          <button className="btn" disabled={busy || !v}>Récupérer mes modifications</button>
+        </form>
+        <button type="button" className="btn ghost" disabled={busy} onClick={() => run(() => login(email, newPassword, true))}>Continuer sans elles</button>
+      </div>
     </Modal>
   );
 }
@@ -224,7 +230,7 @@ function ServerResetModal({ onClose }: { onClose: (newPassword?: string) => void
   return (
     <Modal title="Choisir un nouveau mot de passe" onClose={() => onClose()}>
       <form className="stack" onSubmit={async (e) => { e.preventDefault(); setBusy(true); try { await setNewServerPassword(p); onClose(p); } catch (err) { toastError(err); } finally { setBusy(false); } }}>
-        <p className="small muted">Ensuite, connectez-vous avec ce nouveau mot de passe. Si des dossiers sont déjà enregistrés sur cet appareil, l’application vous demandera une seule fois l’ancien mot de passe ou votre clé de secours pour les rouvrir.</p>
+        <p className="small muted">Ensuite, connectez-vous avec ce nouveau mot de passe, sur ce téléphone comme sur vos autres appareils : vos dossiers s’y retrouvent.</p>
         <Field label="Nouveau mot de passe" hint="10 caractères minimum."><PasswordInput value={p} onChange={setP} isNew minLength={10} autoFocus /></Field>
         <button className="btn" disabled={busy}>{busy ? 'Patientez…' : 'Enregistrer'}</button>
       </form>
@@ -271,7 +277,7 @@ export function LockScreen() {
         {err && <p className="auth-msg err" role="alert">{err}</p>}
         <button className="btn" disabled={busy}>{busy ? 'Patientez…' : 'Déverrouiller'}</button>
         <hr className="sep" />
-        {pending > 0 && <p className="small" style={{ color: 'var(--amber)' }}>{pending} modification(s) non synchronisée(s) : elles restent chiffrées sur l’appareil et seront envoyées à la prochaine connexion de ce compte.</p>}
+        {pending > 0 && <p className="small" style={{ color: 'var(--amber)' }}>{pending} modification(s) non synchronisée(s) : elles restent sur l’appareil et seront envoyées à la prochaine connexion de ce compte.</p>}
         <button type="button" className="btn ghost" onClick={() => logout()}>Changer d’utilisateur ou mot de passe oublié</button>
       </form>
       </div>

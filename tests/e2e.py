@@ -37,10 +37,7 @@ with sync_playwright() as p:
         pg.get_by_label('E-mail').fill('fred@berger.tg')
         pg.get_by_label('Mot de passe').fill('un-mot-de-passe-solide')
         pg.get_by_role('button', name='Créer le compte').click()
-        expect(pg.locator('.recovery')).to_be_visible(timeout=20000)
-        pg.screenshot(path=f'{OUT}/01-cle-secours.png')
-        pg.get_by_label(re.compile('conservé cette clé')).check()
-        pg.get_by_role('button', name='Continuer').click()
+        expect(pg.locator('.recovery')).to_have_count(0)  # plus de clé de secours à noter
         expect(pg.get_by_role('heading', name=re.compile('Bonjour|Bon après-midi|Bonsoir'))).to_be_visible(timeout=20000)
     t1()
 
@@ -244,8 +241,6 @@ with sync_playwright() as p:
         pg.get_by_label('E-mail').fill('autre@berger.tg')
         pg.get_by_label('Mot de passe').fill('autre-mot-de-passe')
         pg.get_by_role('button', name='Créer le compte').click()
-        pg.get_by_label(re.compile('conservé cette clé')).check()
-        pg.get_by_role('button', name='Continuer').click()
         pg.goto(URL + '#/jeunes')
         expect(pg.get_by_text('Aucune fiche')).to_be_visible()
     t15()

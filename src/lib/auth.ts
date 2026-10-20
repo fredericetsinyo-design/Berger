@@ -1,19 +1,19 @@
 import { db, type DeviceAccount } from './db';
-import { deriveKey, fromB64, open, randomBytes, seal, toB64, uuid, PBKDF2_ITERATIONS } from './crypto';
+import { deriveKey, fromB64, open, randomBytes, toB64, uuid, PBKDF2_ITERATIONS } from './crypto';
 import { vault } from './store';
 import { supabase, isOnline } from './supabase';
 import type { UserProfile, Role } from './types';
 import { ensureDefaults } from './defaults';
 
-// Authentification
-// - Mode « local » : comptes propres à l'appareil (aucun serveur). Idéal pour démarrer seul.
-// - Mode « supabase » : Supabase Auth + synchronisation. Fonctionne aussi hors ligne
-//   après une première connexion (déverrouillage local par le mot de passe).
-// Dans les deux modes, une clé de données aléatoire chiffre les dossiers ; elle est protégée
-// par le mot de passe ET par une clé de secours affichée une seule fois à la création.
+// Authentification — un seul secret : le mot de passe du compte.
+// - Mode « supabase » : le serveur vérifie le mot de passe ; les dossiers sont synchronisés,
+//   donc on les retrouve sur tout appareil où l'on se connecte avec le même compte.
+// - Hors ligne, l'appareil vérifie le mot de passe grâce à une empreinte (PBKDF2) gardée localement.
+// - Plus de clé de secours : les données de l'appareil ne sont plus verrouillées par une clé
+//   à conserver. Si le mot de passe change, l'appareil se met à jour à la connexion suivante.
 
 export class AuthError extends Error {
-  constructor(message: string, public code: 'identifiants' | 'cle_locale' | 'reseau' | 'existe' | 'inconnu' = 'inconnu') { super(message); }
+  constructor(message: string, public code: 'identifiants' | 'cle_locale' | 'reseau' | 'existe' | 'inconnu' = 'inconnu', public pending = 0) { super(message); }
 }
 
 let currentUser: UserProfile | null = null;
@@ -22,73 +22,76 @@ export const onAuthChange = (l: () => void) => { listeners.add(l); return () => 
 const emit = () => listeners.forEach((l) => l());
 export const getUser = () => currentUser;
 
-// Clé de secours à afficher une seule fois après la création du compte sur l'appareil.
-let pendingRecovery: string | null = null;
-export const getPendingRecovery = () => pendingRecovery;
-export function clearPendingRecovery() { pendingRecovery = null; emit(); }
+// Conservés pour compatibilité : il n'y a plus de clé de secours à afficher.
+export const getPendingRecovery = (): string | null => null;
+export function clearPendingRecovery() { emit(); }
 
-function recoveryCode(): string {
-  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const b = randomBytes(24);
-  const chars = [...b].map((x) => alphabet[x % alphabet.length]).join('');
-  return chars.match(/.{4}/g)!.join('-');
-}
+const normEmail = (e: string) => e.trim().toLowerCase();
 
+// ---------------- Clé de l'appareil et empreinte du mot de passe ----------------
 async function newDataKey(): Promise<{ key: CryptoKey; raw: string }> {
   const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-  const raw = toB64(await crypto.subtle.exportKey('raw', key));
-  return { key, raw };
+  return { key, raw: toB64(await crypto.subtle.exportKey('raw', key)) };
+}
+const importDataKey = (raw: string) => crypto.subtle.importKey('raw', fromB64(raw), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+
+async function fingerprint(password: string, salt: Uint8Array, iterations = PBKDF2_ITERATIONS) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt as BufferSource, iterations, hash: 'SHA-256' }, base, 256);
+  return toB64(bits);
 }
 
-async function importDataKey(raw: string) {
-  return crypto.subtle.importKey('raw', fromB64(raw), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+async function setPassword(accountId: string, password: string) {
+  const vSalt = randomBytes(16);
+  await db.accounts.update(accountId, { vSalt: toB64(vSalt), verifier: await fingerprint(password, vSalt), iterations: PBKDF2_ITERATIONS });
+}
+
+/** Vrai si le mot de passe correspond à celui connu par cet appareil. */
+async function passwordMatches(acc: DeviceAccount, password: string) {
+  if (acc.verifier && acc.vSalt) return (await fingerprint(password, fromB64(acc.vSalt), acc.iterations)) === acc.verifier;
+  if (acc.wrappedKey && acc.salt) { // ancien format : le mot de passe protégeait la clé
+    try { await open<string>(await deriveKey(password, fromB64(acc.salt), acc.iterations), acc.wrappedKey); return true; } catch { return false; }
+  }
+  return false;
+}
+
+/** Clé de l'appareil. Les anciens comptes (clé protégée par le mot de passe) sont convertis au passage. */
+async function deviceKey(acc: DeviceAccount, password?: string): Promise<CryptoKey | null> {
+  if (acc.rawKey) return importDataKey(acc.rawKey);
+  if (password && acc.wrappedKey && acc.salt) {
+    try {
+      const raw = await open<string>(await deriveKey(password, fromB64(acc.salt), acc.iterations), acc.wrappedKey);
+      await db.accounts.update(acc.id, { rawKey: raw, wrappedKey: undefined, wrappedKeyRecovery: undefined, recoverySalt: undefined });
+      if (!acc.verifier) await setPassword(acc.id, password);
+      return importDataKey(raw);
+    } catch { return null; }
+  }
+  return null;
+}
+
+/** Repart d'une copie vide sur l'appareil ; les dossiers reviennent du serveur à la synchronisation. */
+async function resetDeviceCopy(accountId: string) {
+  await db.transaction('rw', [db.records, db.blobs, db.outbox, db.conflicts, db.meta], async () => {
+    await db.records.where('ownerId').equals(accountId).delete();
+    await db.blobs.where('ownerId').equals(accountId).delete();
+    await db.outbox.where('ownerId').equals(accountId).delete();
+    await db.conflicts.where('ownerId').equals(accountId).delete();
+    await db.meta.delete(`cursor:${accountId}`);
+  });
+  const { raw } = await newDataKey();
+  await db.accounts.update(accountId, { rawKey: raw, wrappedKey: undefined, wrappedKeyRecovery: undefined, recoverySalt: undefined });
 }
 
 async function createDeviceAccount(p: { id: string; email: string; displayName: string; role: Role; mode: 'local' | 'supabase'; password: string }) {
   const { key, raw } = await newDataKey();
-  const salt = randomBytes(16);
-  const recoverySalt = randomBytes(16);
-  const code = recoveryCode();
-  const kek = await deriveKey(p.password, salt);
-  const rek = await deriveKey(code.replace(/-/g, ''), recoverySalt);
+  const vSalt = randomBytes(16);
   const account: DeviceAccount = {
-    id: p.id, email: p.email.toLowerCase(), displayName: p.displayName, role: p.role, mode: p.mode,
-    salt: toB64(salt), iterations: PBKDF2_ITERATIONS, wrappedKey: await seal(kek, raw),
-    recoverySalt: toB64(recoverySalt), wrappedKeyRecovery: await seal(rek, raw),
+    id: p.id, email: normEmail(p.email), displayName: p.displayName, role: p.role, mode: p.mode,
+    iterations: PBKDF2_ITERATIONS, rawKey: raw, vSalt: toB64(vSalt), verifier: await fingerprint(p.password, vSalt),
     createdAt: new Date().toISOString(),
   };
   await db.accounts.put(account);
-  return { account, key, recoveryCode: code };
-}
-
-async function unwrapWithPassword(account: DeviceAccount, password: string): Promise<CryptoKey> {
-  try {
-    const kek = await deriveKey(password, fromB64(account.salt), account.iterations);
-    const raw = await open<string>(kek, account.wrappedKey);
-    return importDataKey(raw);
-  } catch {
-    throw new AuthError('Mot de passe incorrect pour les données de cet appareil.', 'cle_locale');
-  }
-}
-
-export async function unwrapWithRecovery(account: DeviceAccount, code: string): Promise<CryptoKey> {
-  try {
-    const rek = await deriveKey(code.replace(/[-\s]/g, '').toUpperCase(), fromB64(account.recoverySalt), account.iterations);
-    const raw = await open<string>(rek, account.wrappedKeyRecovery);
-    return importDataKey(raw);
-  } catch {
-    throw new AuthError('Clé de secours incorrecte.', 'cle_locale');
-  }
-}
-
-/** Ré-enveloppe la clé de données avec un nouveau mot de passe (aucune donnée n'est ré-chiffrée). */
-export async function rewrapPassword(accountId: string, dataKey: CryptoKey, newPassword: string) {
-  const account = await db.accounts.get(accountId);
-  if (!account) throw new AuthError('Compte introuvable');
-  const salt = randomBytes(16);
-  const kek = await deriveKey(newPassword, salt);
-  const raw = toB64(await crypto.subtle.exportKey('raw', dataKey));
-  await db.accounts.update(accountId, { salt: toB64(salt), iterations: PBKDF2_ITERATIONS, wrappedKey: await seal(kek, raw) });
+  return { account, key };
 }
 
 async function startSession(account: DeviceAccount, key: CryptoKey) {
@@ -101,27 +104,26 @@ async function startSession(account: DeviceAccount, key: CryptoKey) {
   return currentUser;
 }
 
-// ---------------- Mode local ----------------
+async function findAccount(email: string) {
+  const all = await db.accounts.where('email').equals(normEmail(email)).toArray();
+  return all.sort((a, b) => (b.lastLoginAt ?? '').localeCompare(a.lastLoginAt ?? ''))[0];
+}
+
+// ---------------- Mode local (sans serveur) ----------------
 export async function registerLocal(email: string, password: string, displayName: string) {
   if (password.length < 10) throw new AuthError('Le mot de passe doit contenir au moins 10 caractères.');
   email = normEmail(email);
-  const existing = await findAccount(email);
-  if (existing) throw new AuthError('Un compte existe déjà avec cet e-mail sur cet appareil. Utilisez « Connexion ».', 'existe');
-  const { account, key, recoveryCode } = await createDeviceAccount({ id: uuid(), email, displayName, role: 'admin', mode: 'local', password });
-  pendingRecovery = recoveryCode;
+  if (await findAccount(email)) throw new AuthError('Un compte existe déjà avec cet e-mail sur cet appareil. Utilisez « Connexion ».', 'existe');
+  const { account, key } = await createDeviceAccount({ id: uuid(), email, displayName, role: 'admin', mode: 'local', password });
   await startSession(account, key);
-  return { recoveryCode };
+  return {};
 }
 
-// ---------------- Connexion au serveur (en arrière-plan) ----------------
-// L'accès aux dossiers de l'appareil ne dépend jamais du serveur : il suffit du mot de passe local.
-// La session serveur sert uniquement à la synchronisation ; si elle manque, on le signale sans bloquer.
+// ---------------- Session serveur ----------------
 export type ServerAuthState = 'inutile' | 'verification' | 'ok' | 'mot_de_passe' | 'hors_ligne' | 'desactive';
 let serverState: ServerAuthState = 'inutile';
 export const getServerAuthState = () => serverState;
 function setServerState(s: ServerAuthState) { serverState = s; emit(); }
-
-const normEmail = (e: string) => e.trim().toLowerCase();
 
 function serverMessage(error: { message?: string; code?: string; status?: number }) {
   const code = error.code ?? '';
@@ -139,7 +141,7 @@ async function checkProfile(userId: string) {
   return prof as { display_name?: string; role?: Role; active?: boolean } | null;
 }
 
-/** Vérifie (ou rétablit) la session serveur du compte déverrouillé, sans jamais bloquer l'accès local. */
+/** Vérifie (ou rétablit) la session serveur du compte ouvert, sans jamais bloquer l'accès. */
 export async function ensureServerSession(password?: string): Promise<ServerAuthState> {
   const sb = supabase();
   const u = currentUser;
@@ -178,7 +180,7 @@ export async function ensureServerSession(password?: string): Promise<ServerAuth
   return serverState;
 }
 
-/** Reconnexion au serveur depuis l'application (si le mot de passe du serveur diffère de celui de l'appareil). */
+/** Reconnexion au serveur depuis l'application ; ce mot de passe devient aussi celui de l'appareil. */
 export async function reconnectServer(password: string) {
   const sb = supabase();
   const u = currentUser;
@@ -186,45 +188,56 @@ export async function reconnectServer(password: string) {
   const r = await sb.auth.signInWithPassword({ email: u.email, password });
   if (r.error) throw serverMessage(r.error);
   if (r.data.user?.id !== u.id) { await sb.auth.signOut({ scope: 'local' }); throw new AuthError('Ce mot de passe correspond à un autre compte du serveur.'); }
+  await setPassword(u.id, password);
   return ensureServerSession();
 }
 
-// ---------------- Connexion (les deux modes) ----------------
-async function findAccount(email: string) {
-  const all = await db.accounts.where('email').equals(normEmail(email)).toArray();
-  return all.sort((a, b) => (b.lastLoginAt ?? '').localeCompare(a.lastLoginAt ?? ''))[0];
+// ---------------- Connexion ----------------
+export type LoginResult = { user: UserProfile; offline?: boolean; refreshed?: boolean };
+
+async function openLocally(acc: DeviceAccount, password: string, offline: boolean): Promise<LoginResult> {
+  if (acc.locked) throw new AuthError('Accès suspendu : reconnectez-vous avec Internet pour vérifier vos autorisations.', 'identifiants');
+  if (!(await passwordMatches(acc, password))) throw new AuthError('Mot de passe incorrect.', 'identifiants');
+  const key = await deviceKey(acc, password);
+  if (!key) throw new AuthError('Mot de passe incorrect.', 'identifiants');
+  const user = await startSession(acc, key);
+  if (acc.mode === 'supabase') setServerState(offline ? 'hors_ligne' : 'mot_de_passe');
+  return { user, offline };
 }
 
-export async function login(rawEmail: string, password: string): Promise<{ user: UserProfile; recoveryCode?: string; offline?: boolean }> {
+/**
+ * @param discardUnsynced vrai si l'utilisateur accepte de perdre des modifications jamais envoyées
+ *        qui restent illisibles (ancien format protégé par un mot de passe oublié).
+ */
+export async function login(rawEmail: string, password: string, discardUnsynced = false): Promise<LoginResult> {
   const email = normEmail(rawEmail);
   const sb = supabase();
   const local = await findAccount(email);
 
-  // 1. Compte présent sur l'appareil : on déverrouille localement, immédiatement, même sans réseau.
-  if (local && (local.mode === 'local' || !sb || !local.locked)) {
-    let key: CryptoKey | null = null;
-    try { key = await unwrapWithPassword(local, password); } catch (e) {
-      if (local.mode === 'local' || !sb) throw new AuthError('Mot de passe incorrect.', 'identifiants');
-      if (!isOnline()) throw new AuthError('Mot de passe incorrect.', 'identifiants');
-      void e; // on tente le serveur : le mot de passe a peut-être été changé ailleurs
-    }
-    if (key) {
-      const user = await startSession(local, key);
-      if (local.mode === 'supabase') void ensureServerSession(password);
-      return { user, offline: local.mode === 'supabase' && !isOnline() };
-    }
+  if (!sb || local?.mode === 'local') {
+    if (!local) throw new AuthError('Aucun compte trouvé sur cet appareil avec cet e-mail. Vérifiez l’adresse ou créez un compte.', 'identifiants');
+    return openLocally(local, password, false);
   }
-  if (!sb) throw new AuthError('Aucun compte trouvé sur cet appareil avec cet e-mail. Vérifiez l’adresse ou créez un compte.', 'identifiants');
   if (!isOnline()) {
-    if (local?.locked) throw new AuthError('Accès suspendu : reconnectez-vous en ligne pour vérifier vos autorisations.', 'identifiants');
-    throw new AuthError('Première connexion sur cet appareil : une connexion Internet est nécessaire.', 'reseau');
+    if (!local) throw new AuthError('Première connexion sur cet appareil : une connexion Internet est nécessaire.', 'reseau');
+    return openLocally(local, password, true);
   }
 
-  // 2. Connexion au serveur.
+  // En ligne : le serveur fait foi.
   let res;
   try { res = await sb.auth.signInWithPassword({ email, password }); }
-  catch (e) { throw serverMessage(e as Error); }
-  if (res.error || !res.data.user) throw serverMessage(res.error ?? {});
+  catch (e) {
+    if (local) return openLocally(local, password, true);
+    throw serverMessage(e as Error);
+  }
+  if (res.error || !res.data.user) {
+    const err = serverMessage(res.error ?? {});
+    if (local && err.code === 'reseau' && !/Trop de tentatives/.test(err.message)) return openLocally(local, password, true);
+    // Mot de passe changé depuis un autre appareil mais l'ancien saisi ici : on ouvre la copie de
+    // l'appareil et un bandeau propose de se reconnecter au serveur pour reprendre la synchronisation.
+    if (local && err.code === 'identifiants' && !/confirmé/.test(err.message) && !local.locked && (await passwordMatches(local, password))) return openLocally(local, password, false);
+    throw err;
+  }
   const uid = res.data.user.id;
   const prof = await checkProfile(uid).catch(() => null);
   if (prof && prof.active === false) {
@@ -235,52 +248,80 @@ export async function login(rawEmail: string, password: string): Promise<{ user:
   const displayName = prof?.display_name ?? email.split('@')[0];
 
   if (local && local.id === uid) {
-    if (local.locked) {
-      // Accès confirmé par le serveur : on lève la suspension puis on déverrouille.
-      await db.accounts.update(local.id, { locked: false, role, displayName });
-      try {
-        const key = await unwrapWithPassword(local, password);
-        const user = await startSession({ ...local, role, displayName }, key);
-        setServerState('ok');
-        return { user };
-      } catch { /* mot de passe local différent : voir ci-dessous */ }
+    let key = await deviceKey(local, password);
+    let refreshed = false;
+    if (!key) {
+      // Ancien format et mot de passe changé : la copie de l'appareil est illisible. On la remplace par
+      // celle du serveur, sauf s'il reste des modifications jamais envoyées (on demande d'abord).
+      const pending = await db.outbox.where('ownerId').equals(local.id).count();
+      if (pending > 0 && !discardUnsynced) {
+        throw new AuthError(`Cet appareil contient ${pending} modification(s) jamais envoyée(s), protégée(s) par votre ancien mot de passe.`, 'cle_locale', pending);
+      }
+      await resetDeviceCopy(local.id);
+      key = await deviceKey((await db.accounts.get(local.id))!);
+      refreshed = true;
     }
-    // Le serveur accepte ce mot de passe, mais les données de l'appareil sont protégées par l'ancien.
-    throw new AuthError('Votre mot de passe a changé. Pour ouvrir les dossiers de cet appareil, saisissez l’ancien mot de passe ou votre clé de secours.', 'cle_locale');
+    await setPassword(local.id, password);
+    await db.accounts.update(local.id, { role, displayName, locked: false });
+    const user = await startSession({ ...(await db.accounts.get(local.id))!, role, displayName }, key!);
+    setServerState('ok');
+    return { user, refreshed };
   }
   const created = await createDeviceAccount({ id: uid, email, displayName, role, mode: 'supabase', password });
-  pendingRecovery = created.recoveryCode;
   const user = await startSession(created.account, created.key);
   setServerState('ok');
-  return { user, recoveryCode: created.recoveryCode };
+  return { user };
 }
 
-/** Déverrouillage après mise en veille : uniquement local, aucun appel réseau. */
+/** Déverrouillage après mise en veille. */
 export async function unlock(password: string) {
   if (!currentUser) throw new AuthError('Non connecté');
-  const account = await db.accounts.get(currentUser.id);
-  if (!account) throw new AuthError('Compte introuvable sur cet appareil');
-  let key: CryptoKey;
-  try { key = await unwrapWithPassword(account, password); } catch { throw new AuthError('Mot de passe incorrect.', 'identifiants'); }
-  await startSession(account, key);
-  if (account.mode === 'supabase' && serverState !== 'ok') void ensureServerSession(password);
+  const acc = await db.accounts.get(currentUser.id);
+  if (!acc) throw new AuthError('Compte introuvable sur cet appareil');
+  if (await passwordMatches(acc, password)) {
+    const key = await deviceKey(acc, password);
+    if (key) {
+      await startSession(acc, key);
+      if (acc.mode === 'supabase' && serverState !== 'ok') void ensureServerSession(password);
+      return;
+    }
+  }
+  // Mot de passe changé depuis un autre appareil : on vérifie auprès du serveur.
+  if (acc.mode === 'supabase' && isOnline()) {
+    try { await login(acc.email, password); return; }
+    catch (e) { if (e instanceof AuthError && e.code !== 'identifiants') throw e; }
+  }
+  throw new AuthError('Mot de passe incorrect.', 'identifiants');
 }
 
-/** Après un changement de mot de passe côté serveur : déverrouille avec l'ancien mot de passe ou la clé de secours. */
+/** Anciens comptes : ouvre la copie de l'appareil avec l'ancien mot de passe ou l'ancienne clé de secours. */
 export async function recoverLocalAccess(email: string, newPassword: string, oldPasswordOrCode: string) {
-  const account = await findAccount(email);
-  if (!account) throw new AuthError('Compte introuvable sur cet appareil');
-  let key: CryptoKey;
-  try { key = await unwrapWithPassword(account, oldPasswordOrCode); }
-  catch { key = await unwrapWithRecovery(account, oldPasswordOrCode); }
-  await rewrapPassword(account.id, key, newPassword);
-  await db.accounts.update(account.id, { locked: false });
-  const user = await startSession((await db.accounts.get(account.id))!, key);
-  if (account.mode === 'supabase') void ensureServerSession(newPassword);
-  return user;
+  const acc = await findAccount(email);
+  if (!acc) throw new AuthError('Compte introuvable sur cet appareil');
+  let raw: string | null = null;
+  try { if (acc.wrappedKey && acc.salt) raw = await open<string>(await deriveKey(oldPasswordOrCode, fromB64(acc.salt), acc.iterations), acc.wrappedKey); } catch { /* */ }
+  if (!raw && acc.wrappedKeyRecovery && acc.recoverySalt) {
+    try { raw = await open<string>(await deriveKey(oldPasswordOrCode.replace(/[-\s]/g, '').toUpperCase(), fromB64(acc.recoverySalt), acc.iterations), acc.wrappedKeyRecovery); } catch { /* */ }
+  }
+  if (!raw) throw new AuthError('Ni l’ancien mot de passe ni la clé de secours ne correspondent.', 'identifiants');
+  await db.accounts.update(acc.id, { rawKey: raw, wrappedKey: undefined, wrappedKeyRecovery: undefined, recoverySalt: undefined });
+  return login(email, newPassword);
 }
 
-export async function signUpSupabase(email: string, password: string, displayName: string): Promise<Awaited<ReturnType<typeof login>> | null> {
+/** Mode local, ancien compte : nouveau mot de passe grâce à l'ancienne clé de secours. */
+export async function resetLocalWithRecovery(email: string, code: string, newPassword: string) {
+  if (newPassword.length < 10) throw new AuthError('Le mot de passe doit contenir au moins 10 caractères.');
+  const acc = await findAccount(email);
+  if (!acc) throw new AuthError('Aucun compte avec cet e-mail sur cet appareil.');
+  if (!acc.wrappedKeyRecovery || !acc.recoverySalt) throw new AuthError('Ce compte n’a pas de clé de secours.');
+  let raw: string;
+  try { raw = await open<string>(await deriveKey(code.replace(/[-\s]/g, '').toUpperCase(), fromB64(acc.recoverySalt), acc.iterations), acc.wrappedKeyRecovery); }
+  catch { throw new AuthError('Clé de secours incorrecte.', 'identifiants'); }
+  await db.accounts.update(acc.id, { rawKey: raw, wrappedKey: undefined });
+  await setPassword(acc.id, newPassword);
+}
+
+export async function signUpSupabase(email: string, password: string, displayName: string): Promise<LoginResult | null> {
   const sb = supabase();
   if (!sb) throw new AuthError('Serveur non configuré');
   if (password.length < 10) throw new AuthError('Le mot de passe doit contenir au moins 10 caractères.');
@@ -296,7 +337,7 @@ export async function signUpSupabase(email: string, password: string, displayNam
 
 export async function requestPasswordReset(email: string) {
   const sb = supabase();
-  if (!sb) throw new AuthError('En mode local, utilisez votre clé de secours.');
+  if (!sb) throw new AuthError('Sans serveur, le mot de passe ne peut pas être réinitialisé par e-mail.');
   const { error } = await sb.auth.resetPasswordForEmail(normEmail(email), { redirectTo: `${location.origin}${location.pathname}` });
   if (error) throw serverMessage(error);
 }
@@ -340,30 +381,23 @@ export async function handleEmailLink(): Promise<EmailLinkResult> {
   return emailLink;
 }
 
-/** Mode local : nouveau mot de passe grâce à la clé de secours. */
-export async function resetLocalWithRecovery(email: string, code: string, newPassword: string) {
-  if (newPassword.length < 10) throw new AuthError('Le mot de passe doit contenir au moins 10 caractères.');
-  const account = await findAccount(email);
-  if (!account) throw new AuthError('Aucun compte avec cet e-mail sur cet appareil.');
-  const key = await unwrapWithRecovery(account, code);
-  await rewrapPassword(account.id, key, newPassword);
-}
 
 export async function changePassword(oldPassword: string, newPassword: string) {
   if (!currentUser) throw new AuthError('Non connecté');
-  const account = (await db.accounts.get(currentUser.id))!;
-  const key = await unwrapWithPassword(account, oldPassword);
-  if (account.mode === 'supabase') await setNewServerPassword(newPassword);
-  await rewrapPassword(account.id, key, newPassword);
+  const acc = (await db.accounts.get(currentUser.id))!;
+  if (!(await passwordMatches(acc, oldPassword))) throw new AuthError('Mot de passe actuel incorrect.', 'identifiants');
+  await deviceKey(acc, oldPassword); // convertit un ancien compte avant le changement
+  if (acc.mode === 'supabase') await setNewServerPassword(newPassword);
+  await setPassword(acc.id, newPassword);
 }
 
-/** Verrouille la session : les dossiers restent chiffrés sur l'appareil. */
+/** Verrouille l'écran : il faudra ressaisir le mot de passe. */
 export function lockSession() {
   vault.lock();
   emit();
 }
 
-/** Déconnexion / changement d'utilisateur. Les modifications non synchronisées sont conservées chiffrées. */
+/** Déconnexion / changement d'utilisateur. Les modifications non synchronisées sont conservées. */
 export async function logout() {
   if (currentUser) await vault.audit('deconnexion');
   const sb = supabase();

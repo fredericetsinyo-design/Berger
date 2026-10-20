@@ -53,9 +53,9 @@ const settle = () => new Promise((r) => setTimeout(r, 30));
 describe('Connexion avec serveur', () => {
   beforeEach(freshDevice);
 
-  it('première connexion : crée le compte de l’appareil et la clé de secours', async () => {
+  it('première connexion sur un appareil : le compte suffit, sans clé de secours', async () => {
     const r = await auth.login(' Frederic@Exemple.tg ', 'motdepasse-solide');
-    expect(r.recoveryCode).toBeTruthy();
+    expect(r.user.email).toBe(EMAIL);
     expect(vault.unlocked).toBe(true);
     expect(auth.getServerAuthState()).toBe('ok');
   });
@@ -111,18 +111,49 @@ describe('Connexion avec serveur', () => {
     await expect(auth.login(EMAIL, 'motdepasse-solide')).rejects.toThrow(/pas encore confirmé/);
   });
 
-  it('mot de passe changé sur le serveur : ancien mot de passe demandé une seule fois', async () => {
+  it('mot de passe changé sur le serveur : dossiers conservés, rien à ressaisir', async () => {
     await auth.login(EMAIL, 'motdepasse-solide');
+    await vault.put('youth', { firstName: 'Afi', lastName: 'K', status: 'actif', startDate: new Date().toISOString(), initial: { items: [] } } as never);
     await auth.logout();
     server.password = 'nouveau-mot-de-passe';
-    const err = await auth.login(EMAIL, 'nouveau-mot-de-passe').catch((e) => e);
-    expect(err).toBeInstanceOf(auth.AuthError);
-    expect(err.code).toBe('cle_locale');
-    await auth.recoverLocalAccess(EMAIL, 'nouveau-mot-de-passe', 'motdepasse-solide');
-    expect(vault.unlocked).toBe(true);
+    const r = await auth.login(EMAIL, 'nouveau-mot-de-passe');
+    expect(r.refreshed).toBeFalsy();
+    expect(vault.all('youth')).toHaveLength(1);
     await auth.logout();
+    server.reachable = false; // hors ligne : le nouveau mot de passe est reconnu par l'appareil
     await auth.login(EMAIL, 'nouveau-mot-de-passe');
+    expect(vault.all('youth')).toHaveLength(1);
+  });
+
+  it('ancien format + mot de passe changé : la copie est remplacée par celle du serveur', async () => {
+    // Compte créé par l'ancienne version (clé protégée par l'ancien mot de passe).
+    const { deriveKey, seal, randomBytes, toB64 } = await import('../src/lib/crypto');
+    const { db } = await import('../src/lib/db');
+    const salt = randomBytes(16);
+    await db.accounts.put({ id: USER_ID, email: EMAIL, displayName: 'F', role: 'admin', mode: 'supabase', iterations: 1000,
+      salt: toB64(salt), wrappedKey: await seal(await deriveKey('ancien-mdp', salt, 1000), 'AAAA'), createdAt: new Date().toISOString() });
+    server.password = 'nouveau-mot-de-passe';
+    const r = await auth.login(EMAIL, 'nouveau-mot-de-passe');
+    expect(r.refreshed).toBe(true);
     expect(vault.unlocked).toBe(true);
+    const acc = await db.accounts.get(USER_ID);
+    expect(acc?.wrappedKey).toBeUndefined();
+    expect(acc?.rawKey).toBeTruthy();
+  });
+
+  it('ancien format avec modifications non envoyées : on demande avant d’effacer', async () => {
+    const { deriveKey, seal, randomBytes, toB64 } = await import('../src/lib/crypto');
+    const { db } = await import('../src/lib/db');
+    const salt = randomBytes(16);
+    await db.accounts.put({ id: USER_ID, email: EMAIL, displayName: 'F', role: 'admin', mode: 'supabase', iterations: 1000,
+      salt: toB64(salt), wrappedKey: await seal(await deriveKey('ancien-mdp', salt, 1000), 'AAAA'), createdAt: new Date().toISOString() });
+    await db.outbox.put({ opId: 'op1', ownerId: USER_ID, table: 'youth', recordId: 'r1', kind: 'upsert', baseVersion: 0, base: null, createdAt: new Date().toISOString(), attempts: 0, status: 'en_attente' });
+    const err = await auth.login(EMAIL, 'motdepasse-solide').catch((e) => e);
+    expect(err.code).toBe('cle_locale');
+    expect(err.pending).toBe(1);
+    await auth.login(EMAIL, 'motdepasse-solide', true);
+    expect(vault.unlocked).toBe(true);
+    expect(await db.outbox.get('op1')).toBeUndefined();
   });
 
   it('lien de réinitialisation reçu par e-mail : reconnu avant le routeur', async () => {

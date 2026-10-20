@@ -84,7 +84,7 @@ function Profile() {
         <h3>Session</h3>
         <p className="small muted">Rôle : {user.role === 'admin' ? 'Administrateur' : user.role === 'responsable' ? 'Responsable d’accompagnement' : 'Accompagnateur'}</p>
         <button className="btn ghost" onClick={() => logout()}>Se déconnecter / changer d’utilisateur</button>
-        <p className="tiny faint">Les modifications non synchronisées restent chiffrées sur l’appareil et ne sont jamais supprimées à la déconnexion.</p>
+        <p className="tiny faint">Les modifications non synchronisées restent sur l’appareil et ne sont jamais supprimées à la déconnexion.</p>
       </div>
     </div>
   );
@@ -109,7 +109,7 @@ function AISettings() {
       {v.provider === 'gemini' && (
         <>
           <p className="small muted">Créez une clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a> (bouton « Create API key »), puis collez-la ici.</p>
-          <Field label="Clé d’API Gemini" hint="Stockée chiffrée sur cet appareil uniquement ; jamais synchronisée. À saisir sur chaque appareil (ou utilisez « Fonction serveur »)."><input className="input" type="password" value={v.apiKey ?? ''} onChange={(e) => setV({ ...v, apiKey: e.target.value })} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="AIza…" /></Field>
+          <Field label="Clé d’API Gemini" hint="Enregistrée sur cet appareil uniquement ; jamais synchronisée. À saisir sur chaque appareil (ou utilisez « Fonction serveur »)."><input className="input" type="password" value={v.apiKey ?? ''} onChange={(e) => setV({ ...v, apiKey: e.target.value })} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="AIza…" /></Field>
           <Field label="Modèle (facultatif)"><input className="input" value={v.model ?? ''} onChange={(e) => setV({ ...v, model: e.target.value })} placeholder={DEFAULT_MODELS.gemini} autoCapitalize="none" /></Field>
           <p className="tiny" style={{ color: 'var(--amber)' }}>Offre gratuite de Gemini : Google peut utiliser les textes envoyés pour améliorer ses services. Les noms, téléphones et e-mails sont retirés avant l’envoi, mais pour des dossiers sensibles, activez la facturation dans Google AI Studio (offre payante, sans réutilisation des données).</p>
         </>
@@ -117,7 +117,7 @@ function AISettings() {
       {(v.provider === 'anthropic' || v.provider === 'openai_compatible') && (
         <>
           {v.provider === 'openai_compatible' && <Field label="URL de base de l’API"><input className="input" value={v.baseUrl ?? ''} onChange={(e) => setV({ ...v, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" /></Field>}
-          <Field label="Clé d’API" hint="Stockée chiffrée sur cet appareil uniquement ; jamais synchronisée."><input className="input" type="password" value={v.apiKey ?? ''} onChange={(e) => setV({ ...v, apiKey: e.target.value })} /></Field>
+          <Field label="Clé d’API" hint="Enregistrée sur cet appareil uniquement ; jamais synchronisée."><input className="input" type="password" value={v.apiKey ?? ''} onChange={(e) => setV({ ...v, apiKey: e.target.value })} /></Field>
           <Field label="Modèle"><input className="input" value={v.model ?? ''} onChange={(e) => setV({ ...v, model: e.target.value })} placeholder={v.provider === 'anthropic' ? DEFAULT_MODELS.anthropic : DEFAULT_MODELS.openai_compatible} /></Field>
         </>
       )}
@@ -181,7 +181,7 @@ function Security() {
     <div className="grid g2">
       <div className="card stack">
         <h3>Protection locale</h3>
-        <p className="small muted">Toutes les données (fiches, notes, transcriptions, audios, pièces jointes) sont chiffrées sur l’appareil avec AES-256-GCM. La clé est déverrouillée par votre mot de passe et n’existe qu’en mémoire pendant la session.</p>
+        <p className="small muted">Vos dossiers sont liés à votre compte : connectez-vous avec votre e-mail et votre mot de passe sur n’importe quel appareil pour les retrouver. Sur le téléphone, la copie locale n’est accessible qu’après connexion ; protégez aussi l’appareil par un code de verrouillage.</p>
         <Field label="Verrouillage automatique après inactivité">
           <select className="input" value={s.autoLockMinutes} onChange={(e) => saveSettings({ autoLockMinutes: +e.target.value })}>
             {[[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 heure'], [0, 'Jamais (déconseillé)']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}

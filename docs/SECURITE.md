@@ -47,3 +47,11 @@ programmé, selon le cadre légal applicable (au Togo : loi n° 2019-014 relativ
 - Rédiger une notice d'information et un modèle de consentement pour les jeunes.
 - Désigner un responsable des données ; tenir un registre des traitements.
 - Sauvegardes : activer les sauvegardes Supabase (Point-in-Time Recovery sur les offres payantes).
+
+## Mise à jour d'octobre 2026 : un seul mot de passe
+
+La clé de secours et le chiffrement des dossiers par le mot de passe ont été supprimés. On ouvre maintenant ses dossiers avec le seul mot de passe du compte, sur n'importe quel appareil.
+- **Mot de passe :** le serveur le vérifie. Pour se connecter hors ligne, l'appareil garde seulement une empreinte du mot de passe (PBKDF2), jamais le mot de passe lui-même.
+- **Copie sur l'appareil :** elle reste codée dans la base locale, mais la clé est gardée sur l'appareil. Elle ne protège donc plus contre quelqu'un qui aurait le téléphone déverrouillé et des outils techniques. Il faut verrouiller le téléphone avec un code.
+- **Mot de passe changé sur un autre appareil :** l'appareil se met à jour à la connexion suivante, sans rien perdre.
+- **Anciens comptes :** ils sont convertis à la première connexion. Si l'ancien mot de passe a été oublié, la copie de l'appareil est remplacée par celle du serveur. Quand des modifications n'ont jamais été envoyées, l'application demande avant de les effacer.

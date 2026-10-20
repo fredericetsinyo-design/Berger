@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import { db, resetDb } from '../src/lib/db';
 import { vault } from '../src/lib/store';
-import { registerLocal, login, logout, resetLocalWithRecovery, AuthError } from '../src/lib/auth';
+import { registerLocal, login, logout, changePassword, AuthError } from '../src/lib/auth';
 import { loadBible, resolve, search, parseRef } from '../src/lib/bible';
 import { THEMES } from '../src/lib/bibleThemes';
 import { generateSummary, setProviderOverride, suggestPassagesLocal, suggestPassagesAI, pseudonymize, AIError } from '../src/lib/ai';
@@ -34,8 +34,7 @@ beforeAll(async () => {
 describe('1. Compte et connexion', () => {
   beforeEach(freshDevice);
   it('crée un compte local, se reconnecte, refuse un mauvais mot de passe', async () => {
-    const { recoveryCode } = await registerLocal('fred@exemple.tg', 'motdepasse-solide', 'Frédéric');
-    expect(recoveryCode).toMatch(/^([A-Z0-9]{4}-){5}[A-Z0-9]{4}$/);
+    await registerLocal('fred@exemple.tg', 'motdepasse-solide', 'Frédéric');
     expect(vault.unlocked).toBe(true);
     await logout();
     expect(vault.unlocked).toBe(false);
@@ -43,11 +42,12 @@ describe('1. Compte et connexion', () => {
     const r = await login('fred@exemple.tg', 'motdepasse-solide');
     expect(r.user.displayName).toBe('Frédéric');
   });
-  it('réinitialise le mot de passe local grâce à la clé de secours, sans perte de données', async () => {
-    const { recoveryCode } = await registerLocal('a@b.tg', 'ancien-mot-de-passe', 'A');
+  it('change le mot de passe sans perte de données', async () => {
+    await registerLocal('a@b.tg', 'ancien-mot-de-passe', 'A');
     await makeYouth();
+    await changePassword('ancien-mot-de-passe', 'nouveau-mot-de-passe');
     await logout();
-    await resetLocalWithRecovery('a@b.tg', recoveryCode, 'nouveau-mot-de-passe');
+    await expect(login('a@b.tg', 'ancien-mot-de-passe')).rejects.toBeInstanceOf(AuthError);
     await login('a@b.tg', 'nouveau-mot-de-passe');
     expect(vault.all('youth')).toHaveLength(1);
   });
